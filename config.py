@@ -1,10 +1,9 @@
 import os
-import secrets
 from datetime import timedelta
 
 class Config:
     # Flask配置
-    SECRET_KEY = os.environ.get('SECRET_KEY') or secrets.token_urlsafe(64)
+    SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key-change-in-production_2026.2.10_16:21'
     
     # 数据库配置
     BASEDIR = os.path.abspath(os.path.dirname(__file__))

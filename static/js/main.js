@@ -5,21 +5,7 @@ class ChatApp {
         this.allHistory = [];
         this.searchTerm = '';
         this.isThinking = false;
-        this.csrfToken = this.getCsrfToken();
         this.init();
-    }
-
-    getCsrfToken() {
-        const tokenMeta = document.querySelector('meta[name="csrf-token"]');
-        return tokenMeta ? tokenMeta.getAttribute('content') : '';
-    }
-
-    withCsrfHeaders(headers = {}) {
-        if (!this.csrfToken) return headers;
-        return {
-            ...headers,
-            'X-CSRF-Token': this.csrfToken
-        };
     }
 
     init() {
@@ -27,16 +13,15 @@ class ChatApp {
         this.loadModels();
         this.loadHistory();
         this.loadUserInfo();
+        this.loadMarkedLibrary();
     }
 
     bindEvents() {
-        // 发送消息
         const sendBtn = document.getElementById('sendBtn');
         if (sendBtn) {
             sendBtn.addEventListener('click', () => this.sendMessage());
         }
         
-        // 键盘事件
         const questionInput = document.getElementById('questionInput');
         if (questionInput) {
             questionInput.addEventListener('keydown', (e) => {
@@ -48,7 +33,6 @@ class ChatApp {
             });
         }
 
-        // 搜索
         const searchBtn = document.getElementById('searchBtn');
         if (searchBtn) {
             searchBtn.addEventListener('click', () => this.searchHistory());
@@ -61,7 +45,6 @@ class ChatApp {
             });
         }
 
-        // 历史记录操作
         const clearHistoryBtn = document.getElementById('clearHistory');
         if (clearHistoryBtn) {
             clearHistoryBtn.addEventListener('click', () => this.clearHistory());
@@ -72,23 +55,20 @@ class ChatApp {
             refreshHistoryBtn.addEventListener('click', () => this.refreshHistory());
         }
 
-        // 聊天操作
         const clearChatBtn = document.getElementById('clearChat');
         if (clearChatBtn) {
             clearChatBtn.addEventListener('click', () => this.clearChat());
         }
 
-        // 退出登录
         const logoutBtn = document.getElementById('logoutBtn');
         if (logoutBtn) {
-            logoutBtn.addEventListener('click', async () => {
+            logoutBtn.addEventListener('click', () => {
                 if (confirm('确定要退出登录吗？')) {
-                    await this.logout();
+                    window.location.href = '/logout';
                 }
             });
         }
 
-        // 自动滚动
         const autoScroll = document.getElementById('autoScroll');
         if (autoScroll) {
             autoScroll.addEventListener('change', () => {
@@ -98,7 +78,6 @@ class ChatApp {
             });
         }
         
-        // 密码模态框Enter键支持
         const newPassword = document.getElementById('newPassword');
         if (newPassword) {
             newPassword.addEventListener('keypress', (e) => {
@@ -114,11 +93,60 @@ class ChatApp {
         }
     }
 
-    // ============ 用户信息 ============
+    loadMarkedLibrary() {
+        if (window.marked) return;
+        
+        const script = document.createElement('script');
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/marked/4.3.0/marked.min.js';
+        script.onload = () => {
+            console.log('✓ Marked库加载成功');
+            if (window.marked) {
+                marked.setOptions({
+                    breaks: true,
+                    gfm: true,
+                    headerIds: true,
+                    mangle: false
+                });
+            }
+        };
+        script.onerror = () => {
+            console.warn('Marked库加载失败，使用简单渲染');
+        };
+        document.head.appendChild(script);
+        
+        const hljsScript = document.createElement('script');
+        hljsScript.src = 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js';
+        document.head.appendChild(hljsScript);
+        
+        const hljsCss = document.createElement('link');
+        hljsCss.rel = 'stylesheet';
+        hljsCss.href = 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/github-dark.min.css';
+        document.head.appendChild(hljsCss);
+    }
+
+    renderMarkdown(text) {
+        if (!text) return '';
+        
+        if (window.marked) {
+            try {
+                return marked.parse(text);
+            } catch (e) {
+                console.error('Markdown渲染失败:', e);
+            }
+        }
+        
+        // 简单渲染
+        return text.replace(/\n/g, '<br>');
+    }
+
     async loadUserInfo() {
         try {
             const response = await fetch('/api/user/info');
             if (!response.ok) {
+                if (response.status === 401) {
+                    window.location.href = '/login';
+                    return;
+                }
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
             const data = await response.json();
@@ -134,20 +162,18 @@ class ChatApp {
                 const userRoleEl = document.getElementById('userRole');
                 if (userRoleEl) {
                     const lastLogin = user.last_login ? new Date(user.last_login).toLocaleString('zh-CN') : '首次登录';
-                    userRoleEl.textContent = `上次登录: ${lastLogin}`;
+                    userRoleEl.innerHTML = `<i class="fas fa-clock"></i> 上次登录: ${lastLogin}`;
                 }
             }
         } catch (error) {
             console.error('加载用户信息失败:', error);
-            // 如果获取用户信息失败，可能是未登录，跳转到登录页
-            if (error.message.includes('401') || error.message.includes('Unauthorized')) {
-                window.location.href = '/login';
-            }
         }
     }
 
-    // ============ 模型管理 ============
     async loadModels() {
+        const select = document.getElementById('modelSelect');
+        if (!select) return;
+        
         try {
             const response = await fetch('/api/models');
             if (!response.ok) {
@@ -155,34 +181,30 @@ class ChatApp {
             }
             const data = await response.json();
             
-            if (data.success) {
-                const select = document.getElementById('modelSelect');
-                if (select) {
-                    select.innerHTML = '';
-                    if (data.models && data.models.length > 0) {
-                        data.models.forEach(model => {
-                            const option = document.createElement('option');
-                            option.value = model;
-                            option.textContent = model;
-                            if (model === 'qwen3:14b') option.selected = true;
-                            select.appendChild(option);
-                        });
-                    } else {
-                        // 默认选项
-                        const option = document.createElement('option');
-                        option.value = 'qwen3:14b';
-                        option.textContent = 'qwen3:14b';
-                        option.selected = true;
-                        select.appendChild(option);
-                    }
-                }
+            select.innerHTML = '';
+            
+            if (data.success && data.models && data.models.length > 0) {
+                data.models.forEach(model => {
+                    const option = document.createElement('option');
+                    option.value = model;
+                    option.textContent = model;
+                    if (model === 'qwen3:14b') option.selected = true;
+                    select.appendChild(option);
+                });
+                console.log('✓ 模型加载成功:', data.models);
+            } else {
+                const option = document.createElement('option');
+                option.value = 'qwen3:14b';
+                option.textContent = 'qwen3:14b';
+                option.selected = true;
+                select.appendChild(option);
             }
         } catch (error) {
             console.error('加载模型失败:', error);
+            select.innerHTML = '<option value="qwen3:14b">qwen3:14b (默认)</option>';
         }
     }
 
-    // ============ 历史记录管理 ============
     async loadHistory() {
         const historyList = document.getElementById('historyList');
         if (!historyList) return;
@@ -190,6 +212,10 @@ class ChatApp {
         try {
             const response = await fetch('/api/history');
             if (!response.ok) {
+                if (response.status === 401) {
+                    window.location.href = '/login';
+                    return;
+                }
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
             const data = await response.json();
@@ -204,9 +230,9 @@ class ChatApp {
             console.error('加载历史失败:', error);
             historyList.innerHTML = `
                 <div class="empty-history">
-                    <i class="fas fa-exclamation-triangle"></i>
-                    <p>加载失败，请刷新重试</p>
-                    <button onclick="app.refreshHistory()" style="margin-top:10px; padding:8px 16px; background:var(--primary); color:white; border:none; border-radius:4px; cursor:pointer;">
+                    <i class="fas fa-exclamation-triangle" style="color: var(--danger);"></i>
+                    <p>加载失败: ${error.message}</p>
+                    <button onclick="app.refreshHistory()" style="margin-top:15px; padding:8px 20px; background:var(--primary); color:white; border:none; border-radius:6px; cursor:pointer;">
                         <i class="fas fa-sync-alt"></i> 重试
                     </button>
                 </div>
@@ -221,9 +247,9 @@ class ChatApp {
         if (!this.allHistory || this.allHistory.length === 0) {
             historyList.innerHTML = `
                 <div class="empty-history">
-                    <i class="fas fa-inbox"></i>
-                    <p>暂无历史记录</p>
-                    <p style="font-size:12px; margin-top:8px;">开始聊天吧！</p>
+                    <i class="fas fa-inbox" style="font-size: 3rem; opacity: 0.3;"></i>
+                    <p style="margin-top: 15px;">暂无历史记录</p>
+                    <p style="font-size: 13px; color: var(--gray); margin-top: 8px;">开始聊天吧！</p>
                 </div>
             `;
             return;
@@ -231,13 +257,11 @@ class ChatApp {
         
         let html = '';
         this.allHistory.forEach(item => {
-            // 截断问题文本
             const question = item.question && item.question.length > 50 
                 ? item.question.substring(0, 50) + '...' 
                 : item.question || '空消息';
             
-            // 格式化时间
-            let timeStr = '';
+            let timeStr = '未知时间';
             if (item.created_at) {
                 try {
                     const date = new Date(item.created_at);
@@ -245,8 +269,6 @@ class ChatApp {
                 } catch (e) {
                     timeStr = item.created_at;
                 }
-            } else {
-                timeStr = '未知时间';
             }
             
             const activeClass = this.currentConversationId === item.id ? 'active' : '';
@@ -255,7 +277,7 @@ class ChatApp {
                 <div class="history-item ${activeClass}" data-id="${item.id}">
                     <h4 title="${this.escapeHtml(item.question || '')}">${this.escapeHtml(question)}</h4>
                     <div class="history-meta">
-                        <span><i class="fas fa-clock"></i> ${timeStr}</span>
+                        <span><i class="far fa-clock"></i> ${timeStr}</span>
                         <button class="delete-history" onclick="app.deleteHistoryItem(${item.id}, event)">
                             <i class="fas fa-trash-alt"></i>
                         </button>
@@ -266,7 +288,6 @@ class ChatApp {
         
         historyList.innerHTML = html;
         
-        // 重新绑定点击事件
         document.querySelectorAll('.history-item').forEach(item => {
             item.addEventListener('click', (e) => {
                 if (!e.target.closest('.delete-history')) {
@@ -294,13 +315,23 @@ class ChatApp {
                         { type: 'answer', content: historyItem.answer || '' }
                     ];
                     
-                    // 更新高亮
                     this.renderHistoryList();
                     
-                    // 显示对话
-                    this.displayConversation();
+                    const messagesContainer = document.getElementById('messages');
+                    if (messagesContainer) {
+                        messagesContainer.innerHTML = '';
+                        
+                        this.displayMessage('question', historyItem.question, false);
+                        
+                        if (historyItem.answer_html) {
+                            this.displayMessage('answer', historyItem.answer_html, true);
+                        } else {
+                            this.displayMessage('answer', historyItem.answer, false);
+                        }
+                    }
                     
-                    // 聚焦输入框
+                    this.scrollToBottom();
+                    
                     const input = document.getElementById('questionInput');
                     if (input) input.focus();
                 }
@@ -311,20 +342,6 @@ class ChatApp {
         }
     }
 
-    displayConversation() {
-        const messagesContainer = document.getElementById('messages');
-        if (!messagesContainer) return;
-        
-        messagesContainer.innerHTML = '';
-        
-        this.currentHistory.forEach(msg => {
-            this.displayMessage(msg.type, msg.content);
-        });
-        
-        this.scrollToBottom();
-    }
-
-    // ============ 思考动画 ============
     showThinking() {
         if (this.isThinking) return;
         this.isThinking = true;
@@ -332,7 +349,6 @@ class ChatApp {
         const messagesContainer = document.getElementById('messages');
         if (!messagesContainer) return;
         
-        // 检查是否已存在思考消息
         if (document.getElementById('thinking-message')) {
             return;
         }
@@ -376,7 +392,6 @@ class ChatApp {
         }
     }
 
-    // ============ 发送消息 ============
     async sendMessage() {
         const input = document.getElementById('questionInput');
         if (!input) return;
@@ -388,24 +403,19 @@ class ChatApp {
             return;
         }
         
-        // 显示用户问题
-        this.displayMessage('question', question);
-        
-        // 清空输入框
+        this.displayMessage('question', question, false);
         input.value = '';
         
-        // 显示思考动画
         this.showThinking();
         
         try {
             const modelSelect = document.getElementById('modelSelect');
             const model = modelSelect ? modelSelect.value : 'qwen3:14b';
             
-            // 构建上下文
             let prompt = question;
             if (this.currentConversationId && this.currentHistory.length > 0) {
                 const context = this.currentHistory
-                    .slice(-4)  // 取最近4条消息
+                    .slice(-4)
                     .map(msg => (msg.type === 'question' ? '用户' : '助手') + ': ' + msg.content)
                     .join('\n');
                 prompt = context + '\n用户: ' + question;
@@ -413,10 +423,10 @@ class ChatApp {
             
             const response = await fetch('/api/chat', {
                 method: 'POST',
-                headers: this.withCsrfHeaders({
+                headers: { 
                     'Content-Type': 'application/json',
                     'Accept': 'application/json'
-                }),
+                },
                 body: JSON.stringify({ 
                     question: prompt, 
                     model: model 
@@ -432,19 +442,15 @@ class ChatApp {
             this.hideThinking();
             
             if (data.success) {
-                // 显示回答
-                this.displayMessage('answer', data.answer);
+                this.displayMessage('answer', data.answer_html || data.answer, true);
                 
-                // 添加到当前对话历史
                 this.currentHistory.push(
                     { type: 'question', content: question },
                     { type: 'answer', content: data.answer }
                 );
                 
-                // 刷新历史记录列表
                 await this.loadHistory();
                 
-                // 更新统计数据
                 this.updateStats({ 
                     tokens_used: data.tokens_used || 0,
                     timestamp: new Date()
@@ -458,7 +464,6 @@ class ChatApp {
             this.hideThinking();
             console.error('发送消息失败:', error);
             
-            // 移除刚才显示的问题
             const messages = document.getElementById('messages');
             if (messages) {
                 const lastMessage = messages.lastElementChild;
@@ -471,21 +476,10 @@ class ChatApp {
         }
     }
 
-    // ============ 显示消息 ============
-    displayMessage(type, content) {
+    displayMessage(type, content, isHtml = false) {
         const messagesContainer = document.getElementById('messages');
         if (!messagesContainer) return;
         
-        const message = this.createMessage(type, content);
-        messagesContainer.appendChild(message);
-        
-        const autoScroll = document.getElementById('autoScroll');
-        if (autoScroll && autoScroll.checked) {
-            this.scrollToBottom();
-        }
-    }
-
-    createMessage(type, content) {
         const message = document.createElement('div');
         message.className = 'message ' + type;
         
@@ -503,21 +497,58 @@ class ChatApp {
             timeStr = '刚刚';
         }
         
-        // 转义HTML并处理换行
-        const formattedContent = this.escapeHtml(content || '').replace(/\n/g, '<br>');
+        let formattedContent;
+        if (isHtml) {
+            formattedContent = content;
+        } else {
+            formattedContent = this.renderMarkdown(content);
+        }
         
         message.innerHTML = `
             <div class="message-header">
                 <i class="fas ${icon}"></i>
                 <strong>${header}</strong>
             </div>
-            <div class="message-content">${formattedContent}</div>
+            <div class="message-content markdown-body">${formattedContent}</div>
             <div class="message-footer">
                 <i class="fas fa-clock"></i> ${timeStr}
             </div>
         `;
         
-        return message;
+        this.addCopyButtons(message);
+        messagesContainer.appendChild(message);
+        
+        const autoScroll = document.getElementById('autoScroll');
+        if (autoScroll && autoScroll.checked) {
+            this.scrollToBottom();
+        }
+    }
+
+    addCopyButtons(element) {
+        const codeBlocks = element.querySelectorAll('pre code');
+        codeBlocks.forEach(codeBlock => {
+            const pre = codeBlock.parentElement;
+            const copyButton = document.createElement('button');
+            copyButton.className = 'copy-code-button';
+            copyButton.innerHTML = '<i class="fas fa-copy"></i>';
+            copyButton.title = '复制代码';
+            copyButton.onclick = (e) => {
+                e.stopPropagation();
+                this.copyToClipboard(codeBlock.textContent);
+            };
+            
+            pre.style.position = 'relative';
+            pre.appendChild(copyButton);
+        });
+    }
+
+    copyToClipboard(text) {
+        navigator.clipboard.writeText(text).then(() => {
+            this.showToast('代码已复制到剪贴板', 'success');
+        }).catch(err => {
+            console.error('复制失败:', err);
+            this.showToast('复制失败', 'error');
+        });
     }
 
     escapeHtml(text) {
@@ -527,7 +558,6 @@ class ChatApp {
         return div.innerHTML;
     }
 
-    // ============ 更新统计 ============
     updateStats(stats) {
         if (stats) {
             const tokenCount = document.getElementById('tokenCount');
@@ -555,7 +585,6 @@ class ChatApp {
         }
     }
 
-    // ============ 滚动到底部 ============
     scrollToBottom() {
         const messagesContainer = document.getElementById('messages');
         if (messagesContainer) {
@@ -563,7 +592,6 @@ class ChatApp {
         }
     }
 
-    // ============ 搜索历史 ============
     searchHistory() {
         const searchInput = document.getElementById('searchInput');
         if (searchInput) {
@@ -631,7 +659,6 @@ class ChatApp {
         historyList.innerHTML = html;
     }
 
-    // ============ 清空历史 ============
     async clearHistory() {
         if (!confirm('确定要清空所有历史记录吗？此操作不可撤销。')) {
             return;
@@ -640,9 +667,9 @@ class ChatApp {
         try {
             const response = await fetch('/api/clear_history', { 
                 method: 'DELETE',
-                headers: this.withCsrfHeaders({
+                headers: {
                     'Accept': 'application/json'
-                })
+                }
             });
             
             if (!response.ok) {
@@ -667,7 +694,6 @@ class ChatApp {
         }
     }
 
-    // ============ 删除单条历史 ============
     async deleteHistoryItem(id, event) {
         if (event) event.stopPropagation();
         
@@ -678,9 +704,9 @@ class ChatApp {
         try {
             const response = await fetch('/api/history/' + id, { 
                 method: 'DELETE',
-                headers: this.withCsrfHeaders({
+                headers: {
                     'Accept': 'application/json'
-                })
+                }
             });
             
             if (!response.ok) {
@@ -707,12 +733,10 @@ class ChatApp {
         }
     }
 
-    // ============ 刷新历史 ============
     refreshHistory() {
         this.loadHistory();
     }
 
-    // ============ 清空聊天 ============
     clearChat() {
         const messages = document.getElementById('messages');
         if (messages) messages.innerHTML = '';
@@ -730,7 +754,6 @@ class ChatApp {
         this.currentHistory = [];
     }
 
-    // ============ 密码修改 ============
     showChangePasswordModal() {
         const modal = document.getElementById('changePasswordModal');
         if (modal) {
@@ -740,7 +763,6 @@ class ChatApp {
                 if (oldPassword) oldPassword.focus();
             }, 100);
             
-            // 清空输入框
             const oldPwd = document.getElementById('oldPassword');
             const newPwd = document.getElementById('newPassword');
             const confirmPwd = document.getElementById('confirmPassword');
@@ -792,10 +814,10 @@ class ChatApp {
             try {
                 const response = await fetch('/change-password', {
                     method: 'POST',
-                    headers: this.withCsrfHeaders({
+                    headers: { 
                         'Content-Type': 'application/json',
                         'Accept': 'application/json'
-                    }),
+                    },
                     body: JSON.stringify({ 
                         old_password: oldPwd, 
                         new_password: newPwd 
@@ -824,34 +846,7 @@ class ChatApp {
         }
     }
 
-    async logout() {
-        try {
-            const response = await fetch('/logout', {
-                method: 'POST',
-                headers: this.withCsrfHeaders({
-                    'Accept': 'application/json'
-                })
-            });
-
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-
-            const data = await response.json();
-            if (data.success) {
-                window.location.href = data.redirect || '/login';
-            } else {
-                throw new Error(data.message || '退出登录失败');
-            }
-        } catch (error) {
-            console.error('退出登录失败:', error);
-            this.showToast('退出登录失败: ' + error.message, 'error');
-        }
-    }
-
-    // ============ Toast提示 ============
     showToast(message, type = 'info') {
-        // 移除已存在的相同toast
         const existingToast = document.querySelector('.toast');
         if (existingToast) {
             existingToast.remove();
@@ -875,14 +870,12 @@ class ChatApp {
     }
 }
 
-// ============ 初始化应用 ============
+// 初始化应用
 document.addEventListener('DOMContentLoaded', function() {
-    // 检查是否是登录页
     if (document.querySelector('.login-page') || document.querySelector('.login-container')) {
-        return; // 登录页不需要初始化ChatApp
+        return;
     }
     
-    // 确保所有需要的元素都存在
     if (document.getElementById('sendBtn') && document.getElementById('historyList')) {
         window.app = new ChatApp();
     } else {

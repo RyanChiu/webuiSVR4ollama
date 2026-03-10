@@ -1,4 +1,3 @@
-# database.py - 简化版，直接在 app.py 中使用
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -7,6 +6,7 @@ from datetime import datetime
 db = SQLAlchemy()
 
 class User(db.Model, UserMixin):
+    """用户模型"""
     __tablename__ = 'users'
     
     id = db.Column(db.Integer, primary_key=True)
@@ -16,43 +16,60 @@ class User(db.Model, UserMixin):
     last_login = db.Column(db.DateTime)
     is_active = db.Column(db.Boolean, default=True)
     
+    # 关联关系
     chats = db.relationship('ChatHistory', backref='user', lazy='dynamic', cascade='all, delete-orphan')
     
     def set_password(self, password):
+        """设置密码哈希"""
         self.password_hash = generate_password_hash(password)
     
     def check_password(self, password):
+        """验证密码"""
         return check_password_hash(self.password_hash, password)
     
-    def get_id(self):
-        return str(self.id)
+    def update_last_login(self):
+        """更新最后登录时间"""
+        self.last_login = datetime.utcnow()
+        db.session.commit()
+    
+    def to_dict(self):
+        """转换为字典"""
+        return {
+            'id': self.id,
+            'username': self.username,
+            'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S') if self.created_at else None,
+            'last_login': self.last_login.strftime('%Y-%m-%d %H:%M:%S') if self.last_login else None
+        }
+    
+    def __repr__(self):
+        return f'<User {self.username}>'
+
 
 class ChatHistory(db.Model):
+    """聊天历史模型"""
     __tablename__ = 'chat_history'
     
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
     question = db.Column(db.Text, nullable=False)
     answer = db.Column(db.Text, nullable=False)
+    answer_html = db.Column(db.Text, default='')
     model = db.Column(db.String(100), default='qwen3:14b')
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
     tokens_used = db.Column(db.Integer, default=0)
     
     def to_dict(self):
+        """转换为字典"""
         return {
             'id': self.id,
+            'user_id': self.user_id,
             'question': self.question,
             'answer': self.answer,
+            'answer_html': self.answer_html or self.answer,
             'model': self.model,
-            'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S'),
-            'tokens_used': self.tokens_used
+            'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S') if self.created_at else None,
+            'tokens_used': self.tokens_used or 0
         }
-
-class SystemConfig(db.Model):
-    __tablename__ = 'system_config'
     
-    id = db.Column(db.Integer, primary_key=True)
-    key = db.Column(db.String(100), unique=True, nullable=False)
-    value = db.Column(db.Text)
-    description = db.Column(db.String(200))
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    def __repr__(self):
+        return f'<ChatHistory {self.id} - User {self.user_id}>'
