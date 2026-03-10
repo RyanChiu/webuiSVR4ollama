@@ -13,7 +13,7 @@ def init_database():
         # 导入应用
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         from app import create_app
-        from database import db, User, SystemConfig
+        from database import db, User, ChatHistory, SystemConfig
         
         app = create_app()
         
@@ -23,18 +23,22 @@ def init_database():
             db.create_all()
             print("✅ 数据库表创建成功")
             
-            # 检查是否需要创建默认管理员
+            # 检查是否需要初始化管理员
             admin = User.query.filter_by(username='admin').first()
             if not admin:
-                print("👤 创建默认管理员用户...")
-                admin = User(
-                    username='admin',
-                    created_at=datetime.utcnow(),
-                    is_active=True
-                )
-                admin.set_password('admin123')
-                db.session.add(admin)
-                print("✅ 管理员用户创建成功 (admin/admin123)")
+                admin_init_password = os.environ.get('ADMIN_INIT_PASSWORD')
+                if admin_init_password:
+                    print("👤 初始化管理员用户...")
+                    admin = User(
+                        username='admin',
+                        created_at=datetime.utcnow(),
+                        is_active=True
+                    )
+                    admin.set_password(admin_init_password)
+                    db.session.add(admin)
+                    print("✅ 管理员用户创建成功 (admin)")
+                else:
+                    print("⚠️ 未设置 ADMIN_INIT_PASSWORD，已跳过默认管理员创建")
             else:
                 print("ℹ️ 管理员用户已存在")
             
