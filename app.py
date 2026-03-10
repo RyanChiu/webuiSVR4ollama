@@ -4,6 +4,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 import requests
 import os
+import shutil
 import secrets
 import hmac
 import time
@@ -35,8 +36,27 @@ if not secret_key:
     secret_key = secrets.token_urlsafe(64)
     print("⚠️ 未设置 SECRET_KEY，已使用进程内随机密钥（重启后会失效）")
 
+base_dir = os.path.abspath(os.path.dirname(__file__))
+default_data_dir = os.path.expanduser(os.environ.get('APP_DATA_DIR', '~/.ollama-webui'))
+default_db_path = os.path.join(default_data_dir, 'app.db')
+configured_db_path = os.path.expanduser(os.environ.get('APP_DB_PATH', default_db_path))
+configured_db_path = os.path.abspath(configured_db_path)
+os.makedirs(os.path.dirname(configured_db_path), exist_ok=True)
+
+# 一次性迁移：若未显式配置 APP_DB_PATH，且新位置不存在，则复制旧库到持久目录
+if 'APP_DB_PATH' not in os.environ and not os.path.exists(configured_db_path):
+    legacy_candidates = [
+        os.path.join(base_dir, 'app.db'),
+        os.path.join(base_dir, 'instance', 'app.db')
+    ]
+    for legacy_db in legacy_candidates:
+        if os.path.exists(legacy_db):
+            shutil.copy2(legacy_db, configured_db_path)
+            print(f"✓ 已迁移数据库到持久目录: {configured_db_path}")
+            break
+
 app.config['SECRET_KEY'] = secret_key
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///app.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{configured_db_path}"
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['OLLAMA_BASE_URL'] = os.environ.get('OLLAMA_BASE_URL', 'http://localhost:11434')
 app.config['DEFAULT_MODEL'] = os.environ.get('DEFAULT_MODEL', 'qwen3:14b')

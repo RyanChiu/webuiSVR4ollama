@@ -8,7 +8,9 @@ class Config:
     
     # 数据库配置
     BASEDIR = os.path.abspath(os.path.dirname(__file__))
-    SQLALCHEMY_DATABASE_URI = f'sqlite:///{os.path.join(BASEDIR, "app.db")}'
+    DATA_DIR = os.path.expanduser(os.environ.get('APP_DATA_DIR', '~/.ollama-webui'))
+    DB_PATH = os.path.abspath(os.path.expanduser(os.environ.get('APP_DB_PATH', os.path.join(DATA_DIR, 'app.db'))))
+    SQLALCHEMY_DATABASE_URI = f'sqlite:///{DB_PATH}'
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     
     # Session配置

@@ -26,8 +26,13 @@ fi
 # 创建日志目录
 mkdir -p logs
 
+# 数据库路径（与 app.py 保持一致）
+DATA_DIR="${APP_DATA_DIR:-$HOME/.ollama-webui}"
+DB_FILE="${APP_DB_PATH:-$DATA_DIR/app.db}"
+mkdir -p "$(dirname "$DB_FILE")"
+
 # 检查数据库
-if [ ! -f "app.db" ]; then
+if [ ! -f "$DB_FILE" ]; then
     echo "🗄️ 初始化数据库..."
     python -c "from app import app, db; app.app_context().push(); db.create_all()"
 fi

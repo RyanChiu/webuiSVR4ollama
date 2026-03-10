@@ -3,6 +3,15 @@ import os
 import sys
 from datetime import datetime
 
+def resolve_db_file():
+    """解析数据库文件路径（与 app.py 保持一致）"""
+    db_path = os.environ.get('APP_DB_PATH')
+    if db_path:
+        return os.path.abspath(os.path.expanduser(db_path))
+    data_dir = os.path.expanduser(os.environ.get('APP_DATA_DIR', '~/.ollama-webui'))
+    return os.path.join(data_dir, 'app.db')
+
+
 def init_database():
     """初始化数据库"""
     print("="*50)
@@ -99,7 +108,12 @@ def reset_database():
     
     try:
         # 删除数据库文件
-        db_files = ['app.db', 'instance/app.db', 'database.db']
+        db_files = [
+            resolve_db_file(),
+            'app.db',
+            'instance/app.db',
+            'database.db'
+        ]
         for db_file in db_files:
             if os.path.exists(db_file):
                 os.remove(db_file)
@@ -117,7 +131,7 @@ def backup_database():
     import shutil
     from datetime import datetime
     
-    db_file = 'app.db'
+    db_file = resolve_db_file()
     if not os.path.exists(db_file):
         print("❌ 数据库文件不存在")
         return False
