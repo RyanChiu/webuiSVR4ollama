@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 - Ollama WebUI</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .login-container { width: 100%; max-width: 420px; }
+        .login-box {
+            background: white;
+            border-radius: 12px;
+            padding: 40px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        .login-header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .login-header i {
+            font-size: 3rem;
+            color: #4361ee;
+            margin-bottom: 15px;
+        }
+        .login-header h1 {
+            color: #333;
+            margin-bottom: 5px;
+        }
+        .login-header p {
+            color: #666;
+            font-size: 0.9rem;
+        }
+        .tabs {
+            display: flex;
+            margin-bottom: 30px;
+            border-bottom: 2px solid #eee;
+        }
+        .tab {
+            flex: 1;
+            text-align: center;
+            padding: 12px;
+            cursor: pointer;
+            color: #666;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+        .tab.active {
+            color: #4361ee;
+            border-bottom: 2px solid #4361ee;
+            margin-bottom: -2px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: all 0.3s;
+        }
+        .form-group input:focus {
+            outline: none;
+            border-color: #4361ee;
+            box-shadow: 0 0 0 3px rgba(67,97,238,0.1);
+        }
+        .btn {
+            width: 100%;
+            padding: 15px;
+            background: #4361ee;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            transition: all 0.3s;
+        }
+        .btn:hover { background: #3a0ca3; }
+        .btn:disabled { background: #ccc; cursor: not-allowed; }
+        .btn-secondary {
+            background: #6c757d;
+            margin-top: 10px;
+        }
+        .btn-secondary:hover { background: #5a6268; }
+        .message-box {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            display: none;
+        }
+        .error { background: #fee; color: #c00; display: block; }
+        .success { background: #efe; color: #0a0; display: block; }
+        .info { background: #e7f3ff; color: #0052cc; display: block; }
+        .demo-account {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            color: #666;
+        }
+    </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-box">
+            <div class="login-header">
+                <i class="fas fa-robot"></i>
+                <h1>Ollama WebUI</h1>
+                <p>基于Qwen3:14b的智能助手</p>
+            </div>
+            
+            <div class="tabs">
+                <div class="tab active" onclick="switchTab('login')">登录</div>
+                <div class="tab" onclick="switchTab('register')">注册</div>
+            </div>
+            
+            <!-- 登录表单 -->
+            <div id="login-form">
+                <div class="form-group">
+                    <input type="text" id="login-username" placeholder="用户名" autofocus>
+                </div>
+                <div class="form-group">
+                    <input type="password" id="login-password" placeholder="密码">
+                </div>
+                <button class="btn" onclick="handleLogin()">
+                    <i class="fas fa-sign-in-alt"></i> 登录
+                </button>
+            </div>
+            
+            <!-- 注册表单（默认隐藏） -->
+            <div id="register-form" style="display: none;">
+                <div class="form-group">
+                    <input type="text" id="register-username" placeholder="用户名（至少3个字符）">
+                </div>
+                <div class="form-group">
+                    <input type="password" id="register-password" placeholder="密码（至少6个字符）">
+                </div>
+                <div class="form-group">
+                    <input type="password" id="register-confirm" placeholder="确认密码">
+                </div>
+                <button class="btn" onclick="handleRegister()">
+                    <i class="fas fa-user-plus"></i> 注册
+                </button>
+                <button class="btn btn-secondary" onclick="switchTab('login')">
+                    <i class="fas fa-arrow-left"></i> 返回登录
+                </button>
+            </div>
+            
+            <div id="message" class="message-box"></div>
+            
+            <div class="demo-account">
+                <i class="fas fa-info-circle"></i> 演示账号: admin / admin123
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 按Enter键登录
+        document.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                const activeTab = document.querySelector('.tab.active');
+                if (activeTab.textContent.includes('登录')) {
+                    handleLogin();
+                }
+            }
+        });
+
+        function switchTab(tab) {
+            const tabs = document.querySelectorAll('.tab');
+            const loginForm = document.getElementById('login-form');
+            const registerForm = document.getElementById('register-form');
+            
+            tabs.forEach(t => t.classList.remove('active'));
+            
+            if (tab === 'login') {
+                tabs[0].classList.add('active');
+                loginForm.style.display = 'block';
+                registerForm.style.display = 'none';
+                document.getElementById('login-username').focus();
+            } else {
+                tabs[1].classList.add('active');
+                loginForm.style.display = 'none';
+                registerForm.style.display = 'block';
+                document.getElementById('register-username').focus();
+            }
+            
+            // 清除消息
+            document.getElementById('message').style.display = 'none';
+        }
+
+        async function handleLogin() {
+            const username = document.getElementById('login-username').value.trim();
+            const password = document.getElementById('login-password').value.trim();
+            
+            if (!username || !password) {
+                showMessage('用户名和密码不能为空', 'error');
+                return;
+            }
+
+            const btn = document.querySelector('#login-form .btn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 登录中...';
+
+            try {
+                const response = await fetch('/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    showMessage('登录成功，正在跳转...', 'success');
+                    setTimeout(() => window.location.href = data.redirect, 1000);
+                } else {
+                    throw new Error(data.message);
+                }
+            } catch (error) {
+                showMessage('登录失败: ' + error.message, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-sign-in-alt"></i> 登录';
+            }
+        }
+
+        async function handleRegister() {
+            const username = document.getElementById('register-username').value.trim();
+            const password = document.getElementById('register-password').value.trim();
+            const confirm = document.getElementById('register-confirm').value.trim();
+            
+            if (!username || !password || !confirm) {
+                showMessage('请填写所有字段', 'error');
+                return;
+            }
+            
+            if (username.length < 3) {
+                showMessage('用户名至少3个字符', 'error');
+                return;
+            }
+            
+            if (password.length < 6) {
+                showMessage('密码至少6个字符', 'error');
+                return;
+            }
+            
+            if (password !== confirm) {
+                showMessage('两次输入的密码不一致', 'error');
+                return;
+            }
+
+            const btn = document.querySelector('#register-form .btn');
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 注册中...';
+
+            try {
+                const response = await fetch('/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    showMessage('注册成功，请登录', 'success');
+                    setTimeout(() => switchTab('login'), 2000);
+                } else {
+                    throw new Error(data.message);
+                }
+            } catch (error) {
+                showMessage('注册失败: ' + error.message, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-user-plus"></i> 注册';
+            }
+        }
+
+        function showMessage(msg, type) {
+            const box = document.getElementById('message');
+            box.textContent = msg;
+            box.className = 'message-box ' + type;
+            box.style.display = 'block';
+            
+            // 5秒后自动隐藏成功消息
+            if (type === 'success') {
+                setTimeout(() => {
+                    box.style.display = 'none';
+                }, 5000);
+            }
+        }
+    </script>
+</body>
+</html>
