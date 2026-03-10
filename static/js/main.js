@@ -5,7 +5,21 @@ class ChatApp {
         this.allHistory = [];
         this.searchTerm = '';
         this.isThinking = false;
+        this.csrfToken = this.getCsrfToken();
         this.init();
+    }
+
+    getCsrfToken() {
+        const tokenMeta = document.querySelector('meta[name="csrf-token"]');
+        return tokenMeta ? tokenMeta.getAttribute('content') : '';
+    }
+
+    withCsrfHeaders(headers = {}) {
+        if (!this.csrfToken) return headers;
+        return {
+            ...headers,
+            'X-CSRF-Token': this.csrfToken
+        };
     }
 
     init() {
@@ -67,9 +81,9 @@ class ChatApp {
         // 退出登录
         const logoutBtn = document.getElementById('logoutBtn');
         if (logoutBtn) {
-            logoutBtn.addEventListener('click', () => {
+            logoutBtn.addEventListener('click', async () => {
                 if (confirm('确定要退出登录吗？')) {
-                    window.location.href = '/logout';
+                    await this.logout();
                 }
             });
         }
@@ -399,10 +413,10 @@ class ChatApp {
             
             const response = await fetch('/api/chat', {
                 method: 'POST',
-                headers: { 
+                headers: this.withCsrfHeaders({
                     'Content-Type': 'application/json',
                     'Accept': 'application/json'
-                },
+                }),
                 body: JSON.stringify({ 
                     question: prompt, 
                     model: model 
@@ -626,9 +640,9 @@ class ChatApp {
         try {
             const response = await fetch('/api/clear_history', { 
                 method: 'DELETE',
-                headers: {
+                headers: this.withCsrfHeaders({
                     'Accept': 'application/json'
-                }
+                })
             });
             
             if (!response.ok) {
@@ -664,9 +678,9 @@ class ChatApp {
         try {
             const response = await fetch('/api/history/' + id, { 
                 method: 'DELETE',
-                headers: {
+                headers: this.withCsrfHeaders({
                     'Accept': 'application/json'
-                }
+                })
             });
             
             if (!response.ok) {
@@ -778,10 +792,10 @@ class ChatApp {
             try {
                 const response = await fetch('/change-password', {
                     method: 'POST',
-                    headers: { 
+                    headers: this.withCsrfHeaders({
                         'Content-Type': 'application/json',
                         'Accept': 'application/json'
-                    },
+                    }),
                     body: JSON.stringify({ 
                         old_password: oldPwd, 
                         new_password: newPwd 
@@ -807,6 +821,31 @@ class ChatApp {
                 btn.disabled = false;
                 btn.innerHTML = originalText;
             }
+        }
+    }
+
+    async logout() {
+        try {
+            const response = await fetch('/logout', {
+                method: 'POST',
+                headers: this.withCsrfHeaders({
+                    'Accept': 'application/json'
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const data = await response.json();
+            if (data.success) {
+                window.location.href = data.redirect || '/login';
+            } else {
+                throw new Error(data.message || '退出登录失败');
+            }
+        } catch (error) {
+            console.error('退出登录失败:', error);
+            this.showToast('退出登录失败: ' + error.message, 'error');
         }
     }
 
