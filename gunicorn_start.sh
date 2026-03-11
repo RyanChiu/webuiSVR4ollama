@@ -24,6 +24,7 @@ mkdir -p logs
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_DIR="${APP_DATA_DIR:-$SCRIPT_DIR/app_data}"
 DB_FILE="${APP_DB_PATH:-$DATA_DIR/app.db}"
+PID_FILE="$SCRIPT_DIR/gunicorn.pid"
 mkdir -p "$(dirname "$DB_FILE")"
 
 # 检查数据库
@@ -34,10 +35,31 @@ fi
 
 # 选择启动方式
 if command -v gunicorn &> /dev/null; then
+    # 若旧实例存在，先优雅停掉，避免重复进程占用同端口
+    if [ -f "$PID_FILE" ]; then
+        OLD_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
+        if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+            echo "♻️ 检测到旧Gunicorn实例(PID=$OLD_PID)，先停止..."
+            kill -TERM "$OLD_PID"
+            for _ in {1..20}; do
+                if kill -0 "$OLD_PID" 2>/dev/null; then
+                    sleep 0.5
+                else
+                    break
+                fi
+            done
+            if kill -0 "$OLD_PID" 2>/dev/null; then
+                echo "⚠️ 旧实例停止超时，强制结束(PID=$OLD_PID)"
+                kill -KILL "$OLD_PID" || true
+            fi
+        fi
+        rm -f "$PID_FILE"
+    fi
+
     echo "🌐 使用Gunicorn启动..."
     echo "📝 访问地址: http://localhost:5001"
     echo "="*50
-    gunicorn -c gunicorn_config.py "app:create_app()"
+    gunicorn -c gunicorn_config.py --pid "$PID_FILE" "app:create_app()"
 else
     echo "⚠️ Gunicorn未安装，使用Flask开发服务器..."
     echo "📝 访问地址: http://localhost:5001"
