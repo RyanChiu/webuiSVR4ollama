@@ -7,6 +7,7 @@ import os
 import shutil
 import sqlite3
 import glob
+import subprocess
 import secrets
 import hmac
 import time
@@ -255,6 +256,34 @@ def extract_model_names(payload):
         if name:
             model_names.append(name)
     return model_names
+
+
+def extract_model_names_from_cli():
+    try:
+        result = subprocess.run(
+            ['ollama', 'list'],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False
+        )
+        if result.returncode != 0:
+            app.logger.warning('执行 ollama list 失败: %s', result.stderr.strip())
+            return []
+
+        model_names = []
+        for line in result.stdout.splitlines():
+            row = line.strip()
+            if not row or row.lower().startswith('name '):
+                continue
+            # ollama list 默认第一列是模型名
+            name = row.split()[0].strip()
+            if name:
+                model_names.append(name)
+        return model_names
+    except Exception:
+        app.logger.exception('从 ollama list 解析模型失败')
+        return []
 
 
 @app.before_request
@@ -692,6 +721,14 @@ def get_models():
             app.logger.info('Ollama /api/tags 可访问，但当前无可用模型')
     except Exception:
         app.logger.exception('获取模型列表失败')
+
+    cli_models = extract_model_names_from_cli()
+    if cli_models:
+        app.logger.info('已从 ollama list 获取模型: %s', cli_models)
+        return jsonify({
+            'success': True,
+            'models': cli_models
+        })
     
     # 如果获取失败，回退到配置的默认模型（若有）
     fallback_models = [app.config['DEFAULT_MODEL']] if app.config['DEFAULT_MODEL'] else []
