@@ -14,20 +14,15 @@ else
     exit 1
 fi
 
-# 检查模型
-echo "🤖 检查Qwen3:14b模型..."
-if curl -s http://localhost:11434/api/tags | grep -q "qwen3:14b"; then
-    echo "✅ 模型已存在"
-else
-    echo "📥 下载Qwen3:14b模型..."
-    ollama pull qwen3:14b
-fi
+# 不在启动脚本中自动拉取模型
+# 模型由用户自行管理（pull / 删除 / 切换）
 
 # 创建日志目录
 mkdir -p logs
 
 # 数据库路径（与 app.py 保持一致）
-DATA_DIR="${APP_DATA_DIR:-$HOME/.ollama-webui}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DATA_DIR="${APP_DATA_DIR:-$SCRIPT_DIR/app_data}"
 DB_FILE="${APP_DB_PATH:-$DATA_DIR/app.db}"
 mkdir -p "$(dirname "$DB_FILE")"
 

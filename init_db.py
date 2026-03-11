@@ -8,7 +8,8 @@ def resolve_db_file():
     db_path = os.environ.get('APP_DB_PATH')
     if db_path:
         return os.path.abspath(os.path.expanduser(db_path))
-    data_dir = os.path.expanduser(os.environ.get('APP_DATA_DIR', '~/.ollama-webui'))
+    base_dir = os.path.abspath(os.path.dirname(__file__))
+    data_dir = os.path.abspath(os.path.expanduser(os.environ.get('APP_DATA_DIR', os.path.join(base_dir, 'app_data'))))
     return os.path.join(data_dir, 'app.db')
 
 
@@ -53,7 +54,7 @@ def init_database():
             
             # 初始化系统配置
             default_configs = [
-                ('default_model', 'qwen3:14b', '默认使用的模型'),
+                ('default_model', os.environ.get('DEFAULT_MODEL', '').strip(), '默认使用的模型'),
                 ('max_history_per_user', '100', '每个用户最大历史记录数'),
                 ('ollama_base_url', 'http://localhost:11434', 'Ollama服务地址'),
                 ('system_init_time', datetime.utcnow().isoformat(), '系统初始化时间')

@@ -195,26 +195,38 @@ class ChatApp {
             const data = await response.json();
             
             select.innerHTML = '';
+            const previousModel = (select.dataset.selectedModel || '').trim();
             
             if (data.success && data.models && data.models.length > 0) {
+                let selectedMatched = false;
                 data.models.forEach(model => {
                     const option = document.createElement('option');
                     option.value = model;
                     option.textContent = model;
-                    if (model === 'qwen3:14b') option.selected = true;
+                    if (previousModel && model === previousModel) {
+                        option.selected = true;
+                        selectedMatched = true;
+                    }
                     select.appendChild(option);
                 });
+                if (!selectedMatched && select.options.length > 0) {
+                    select.options[0].selected = true;
+                }
+                if (select.value) {
+                    select.dataset.selectedModel = select.value;
+                }
                 console.log('✓ 模型加载成功:', data.models);
             } else {
                 const option = document.createElement('option');
-                option.value = 'qwen3:14b';
-                option.textContent = 'qwen3:14b';
+                option.value = '';
+                option.textContent = '暂无可用模型（请先在Ollama中安装）';
                 option.selected = true;
+                option.disabled = true;
                 select.appendChild(option);
             }
         } catch (error) {
             console.error('加载模型失败:', error);
-            select.innerHTML = '<option value="qwen3:14b">qwen3:14b (默认)</option>';
+            select.innerHTML = '<option value="" selected disabled>无法获取模型列表</option>';
         }
     }
 
@@ -416,6 +428,16 @@ class ChatApp {
             this.showToast('请输入问题', 'warning');
             return;
         }
+
+        const modelSelect = document.getElementById('modelSelect');
+        const model = modelSelect ? (modelSelect.value || '').trim() : '';
+        if (!model) {
+            this.showToast('请先在Ollama中安装并选择模型', 'warning');
+            return;
+        }
+        if (modelSelect) {
+            modelSelect.dataset.selectedModel = model;
+        }
         
         this.displayMessage('question', question, false);
         input.value = '';
@@ -423,9 +445,6 @@ class ChatApp {
         this.showThinking();
         
         try {
-            const modelSelect = document.getElementById('modelSelect');
-            const model = modelSelect ? modelSelect.value : 'qwen3:14b';
-            
             let prompt = question;
             if (this.currentConversationId && this.currentHistory.length > 0) {
                 const context = this.currentHistory

@@ -79,7 +79,7 @@ def migrate_to_multi_user():
                                 user_id=admin.id,
                                 question=old_chat.get('question', ''),
                                 answer=old_chat.get('answer', ''),
-                                model=old_chat.get('model', 'qwen3:14b'),
+                                model=old_chat.get('model', os.environ.get('DEFAULT_MODEL', '').strip()),
                                 created_at=datetime.fromisoformat(old_chat.get('created_at')) 
                                 if old_chat.get('created_at') else datetime.utcnow(),
                                 tokens_used=old_chat.get('tokens_used', 0)

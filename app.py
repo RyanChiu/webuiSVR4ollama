@@ -37,7 +37,7 @@ if not secret_key:
     print("⚠️ 未设置 SECRET_KEY，已使用进程内随机密钥（重启后会失效）")
 
 base_dir = os.path.abspath(os.path.dirname(__file__))
-default_data_dir = os.path.expanduser(os.environ.get('APP_DATA_DIR', '~/.ollama-webui'))
+default_data_dir = os.path.abspath(os.path.expanduser(os.environ.get('APP_DATA_DIR', os.path.join(base_dir, 'app_data'))))
 default_db_path = os.path.join(default_data_dir, 'app.db')
 configured_db_path = os.path.expanduser(os.environ.get('APP_DB_PATH', default_db_path))
 configured_db_path = os.path.abspath(configured_db_path)
@@ -59,7 +59,7 @@ app.config['SECRET_KEY'] = secret_key
 app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{configured_db_path}"
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['OLLAMA_BASE_URL'] = os.environ.get('OLLAMA_BASE_URL', 'http://localhost:11434')
-app.config['DEFAULT_MODEL'] = os.environ.get('DEFAULT_MODEL', 'qwen3:14b')
+app.config['DEFAULT_MODEL'] = os.environ.get('DEFAULT_MODEL', '').strip()
 app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH', '1048576'))  # 1MB
 app.config['MAX_QUESTION_CHARS'] = int(os.environ.get('MAX_QUESTION_CHARS', '8000'))
 app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -251,6 +251,8 @@ init_db()
 def query_ollama(prompt, model=None):
     try:
         model = model or app.config['DEFAULT_MODEL']
+        if not model:
+            return {"error": "未指定模型，请先在Ollama中安装并选择模型"}
         url = f"{app.config['OLLAMA_BASE_URL']}/api/generate"
         
         response = requests.post(url, json={
@@ -425,10 +427,12 @@ def chat():
             return jsonify({'success': False, 'message': '无效的请求数据'})
         
         question = data.get('question', '').strip()
-        model = data.get('model') or app.config['DEFAULT_MODEL']
+        model = (data.get('model') or app.config['DEFAULT_MODEL']).strip()
         
         if not question:
             return jsonify({'success': False, 'message': '问题不能为空'})
+        if not model:
+            return jsonify({'success': False, 'message': '请先选择模型'})
         
         if len(question) > app.config['MAX_QUESTION_CHARS']:
             return jsonify({'success': False, 'message': f"问题过长，最多 {app.config['MAX_QUESTION_CHARS']} 字符"})
@@ -540,8 +544,8 @@ def get_models():
                 elif isinstance(model, str):
                     model_names.append(model)
             
-            # 如果没有模型，至少返回默认模型
-            if not model_names:
+            # 若没有从Ollama读取到模型，则回退到配置的默认模型（若有）
+            if not model_names and app.config['DEFAULT_MODEL']:
                 model_names = [app.config['DEFAULT_MODEL']]
             
             print(f"✓ 获取到模型列表: {model_names}")
@@ -556,10 +560,11 @@ def get_models():
     except Exception:
         app.logger.exception('获取模型列表失败')
     
-    # 如果获取失败，返回默认模型
+    # 如果获取失败，回退到配置的默认模型（若有）
+    fallback_models = [app.config['DEFAULT_MODEL']] if app.config['DEFAULT_MODEL'] else []
     return jsonify({
         'success': True,
-        'models': [app.config['DEFAULT_MODEL']]
+        'models': fallback_models
     })
 
 @app.route('/health')
@@ -581,7 +586,7 @@ if __name__ == '__main__':
     print("="*50)
     print(f"📁 数据库: {app.config['SQLALCHEMY_DATABASE_URI']}")
     print(f"🌐 Ollama: {app.config['OLLAMA_BASE_URL']}")
-    print(f"🤖 默认模型: {app.config['DEFAULT_MODEL']}")
+    print(f"🤖 默认模型: {app.config['DEFAULT_MODEL'] or '（未设置）'}")
     print(f"🔐 调试模式: {env_flag('FLASK_DEBUG', False)}")
     print("="*50 + "\n")
     app.run(

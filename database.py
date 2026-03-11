@@ -54,7 +54,7 @@ class ChatHistory(db.Model):
     question = db.Column(db.Text, nullable=False)
     answer = db.Column(db.Text, nullable=False)
     answer_html = db.Column(db.Text, default='')
-    model = db.Column(db.String(100), default='qwen3:14b')
+    model = db.Column(db.String(100), default='')
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
     tokens_used = db.Column(db.Integer, default=0)
     
