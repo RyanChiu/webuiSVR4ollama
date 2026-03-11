@@ -33,18 +33,58 @@ def env_flag(name, default=False):
         return default
     return value.lower() in ('1', 'true', 'yes', 'on')
 
-
-secret_key = os.environ.get('SECRET_KEY')
-if not secret_key:
-    secret_key = secrets.token_urlsafe(64)
-    print("⚠️ 未设置 SECRET_KEY，已使用进程内随机密钥（重启后会失效）")
-
 base_dir = os.path.abspath(os.path.dirname(__file__))
 default_data_dir = os.path.abspath(os.path.expanduser(os.environ.get('APP_DATA_DIR', os.path.join(base_dir, 'app_data'))))
 default_db_path = os.path.join(default_data_dir, 'app.db')
 configured_db_path = os.path.expanduser(os.environ.get('APP_DB_PATH', default_db_path))
 configured_db_path = os.path.abspath(configured_db_path)
 os.makedirs(os.path.dirname(configured_db_path), exist_ok=True)
+
+
+def resolve_secret_key():
+    env_secret = os.environ.get('SECRET_KEY')
+    if env_secret:
+        return env_secret
+
+    key_file = os.path.abspath(
+        os.path.expanduser(
+            os.environ.get('APP_SECRET_KEY_FILE', os.path.join(default_data_dir, '.secret_key'))
+        )
+    )
+    os.makedirs(os.path.dirname(key_file), exist_ok=True)
+
+    if os.path.exists(key_file):
+        try:
+            with open(key_file, 'r', encoding='utf-8') as f:
+                existing = f.read().strip()
+            if existing:
+                return existing
+        except Exception:
+            app.logger.exception('读取 SECRET_KEY 文件失败: %s', key_file)
+
+    generated = secrets.token_urlsafe(64)
+    try:
+        with open(key_file, 'x', encoding='utf-8') as f:
+            f.write(generated)
+        os.chmod(key_file, 0o600)
+        print(f"⚠️ 未设置 SECRET_KEY，已生成并保存到: {key_file}")
+        return generated
+    except FileExistsError:
+        try:
+            with open(key_file, 'r', encoding='utf-8') as f:
+                existing = f.read().strip()
+            if existing:
+                return existing
+        except Exception:
+            app.logger.exception('读取已存在的 SECRET_KEY 文件失败: %s', key_file)
+    except Exception:
+        app.logger.exception('写入 SECRET_KEY 文件失败: %s', key_file)
+
+    print("⚠️ 未设置 SECRET_KEY，已使用进程内随机密钥（重启后可能失效）")
+    return generated
+
+
+secret_key = resolve_secret_key()
 
 def _table_count(db_file, table_name):
     if not os.path.exists(db_file):
