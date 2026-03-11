@@ -658,7 +658,6 @@ def clear_history():
         return jsonify({'success': False, 'message': '清空失败'}), 500
 
 @app.route('/api/models', methods=['GET'])
-@login_required
 def get_models():
     """获取可用的模型列表"""
     try:

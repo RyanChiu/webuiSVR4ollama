@@ -188,22 +188,29 @@ class ChatApp {
         if (!select) return;
         
         try {
-            const response = await fetch('/api/models');
-            if (response.status === 401) {
-                window.location.href = '/login';
-                return;
-            }
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+            const response = await fetch('/api/models', {
+                headers: { 'Accept': 'application/json' }
+            });
+            const contentType = (response.headers.get('content-type') || '').toLowerCase();
+            if (!contentType.includes('application/json')) {
+                const raw = await response.text();
+                throw new Error(`响应不是JSON（status=${response.status}）: ${raw.slice(0, 80)}`);
             }
             const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.message || `HTTP error! status: ${response.status}`);
+            }
             
             select.innerHTML = '';
             const previousModel = (select.dataset.selectedModel || '').trim();
+            const modelList = Array.isArray(data.models) ? data.models : [];
             
-            if (data.success && data.models && data.models.length > 0) {
+            if (data.success && modelList.length > 0) {
                 let selectedMatched = false;
-                data.models.forEach(model => {
+                modelList.forEach(model => {
+                    if (typeof model !== 'string' || !model.trim()) {
+                        return;
+                    }
                     const option = document.createElement('option');
                     option.value = model;
                     option.textContent = model;
@@ -219,7 +226,7 @@ class ChatApp {
                 if (select.value) {
                     select.dataset.selectedModel = select.value;
                 }
-                console.log('✓ 模型加载成功:', data.models);
+                console.log('✓ 模型加载成功:', modelList);
             } else {
                 const option = document.createElement('option');
                 option.value = '';
