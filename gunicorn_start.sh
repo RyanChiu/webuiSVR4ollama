@@ -35,12 +35,12 @@ fi
 # 选择启动方式
 if command -v gunicorn &> /dev/null; then
     echo "🌐 使用Gunicorn启动..."
-    echo "📝 访问地址: http://localhost:5000"
+    echo "📝 访问地址: http://localhost:5001"
     echo "="*50
     gunicorn -c gunicorn_config.py "app:create_app()"
 else
     echo "⚠️ Gunicorn未安装，使用Flask开发服务器..."
-    echo "📝 访问地址: http://localhost:5000"
+    echo "📝 访问地址: http://localhost:5001"
     echo "="*50
     python app.py
 fi

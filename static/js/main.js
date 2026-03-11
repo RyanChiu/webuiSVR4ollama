@@ -189,6 +189,10 @@ class ChatApp {
         
         try {
             const response = await fetch('/api/models');
+            if (response.status === 401) {
+                window.location.href = '/login';
+                return;
+            }
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }

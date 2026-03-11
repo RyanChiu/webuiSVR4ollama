@@ -5,6 +5,8 @@ from datetime import datetime
 import requests
 import os
 import shutil
+import sqlite3
+import glob
 import secrets
 import hmac
 import time
@@ -43,17 +45,103 @@ configured_db_path = os.path.expanduser(os.environ.get('APP_DB_PATH', default_db
 configured_db_path = os.path.abspath(configured_db_path)
 os.makedirs(os.path.dirname(configured_db_path), exist_ok=True)
 
-# 一次性迁移：若未显式配置 APP_DB_PATH，且新位置不存在，则复制旧库到持久目录
-if 'APP_DB_PATH' not in os.environ and not os.path.exists(configured_db_path):
-    legacy_candidates = [
+def _table_count(db_file, table_name):
+    if not os.path.exists(db_file):
+        return 0
+    conn = None
+    try:
+        conn = sqlite3.connect(db_file)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table_name,)
+        )
+        if cursor.fetchone() is None:
+            return 0
+        cursor.execute(f"SELECT COUNT(1) FROM {table_name}")
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
+    except Exception:
+        return 0
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _db_table_stats(db_file):
+    users_count = max(_table_count(db_file, 'users'), _table_count(db_file, 'user'))
+    chats_count = _table_count(db_file, 'chat_history')
+    return users_count, chats_count
+
+
+def _db_data_score(db_file):
+    users_count, chats_count = _db_table_stats(db_file)
+    return users_count + chats_count
+
+
+def _legacy_db_candidates():
+    candidates = [
         os.path.join(base_dir, 'app.db'),
         os.path.join(base_dir, 'instance', 'app.db')
     ]
-    for legacy_db in legacy_candidates:
-        if os.path.exists(legacy_db):
-            shutil.copy2(legacy_db, configured_db_path)
-            print(f"✓ 已迁移数据库到持久目录: {configured_db_path}")
-            break
+    backup_candidates = sorted(
+        glob.glob(os.path.join(base_dir, 'backups', 'app_*.db')),
+        reverse=True
+    )
+    candidates.extend(backup_candidates)
+    unique = []
+    seen = set()
+    for item in candidates:
+        normalized = os.path.abspath(item)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(normalized)
+    return unique
+
+
+legacy_candidates = _legacy_db_candidates()
+
+best_legacy_db = None
+best_legacy_users = 0
+best_legacy_chats = 0
+best_legacy_score = 0
+for legacy_db in legacy_candidates:
+    if legacy_db == configured_db_path:
+        continue
+    users_count, chats_count = _db_table_stats(legacy_db)
+    score = users_count + chats_count
+    if score > best_legacy_score:
+        best_legacy_db = legacy_db
+        best_legacy_users = users_count
+        best_legacy_chats = chats_count
+        best_legacy_score = score
+
+# 迁移策略：
+# 1) 目标库不存在时，直接复制首个存在且有数据的旧库。
+# 2) 目标库已存在但数据更少（尤其聊天记录更少）时，尝试从更完整旧库补迁。
+if best_legacy_db and best_legacy_score > 0:
+    if not os.path.exists(configured_db_path):
+        shutil.copy2(best_legacy_db, configured_db_path)
+        print(f"✓ 已迁移数据库到持久目录: {configured_db_path}")
+    else:
+        current_users, current_chats = _db_table_stats(configured_db_path)
+        current_score = current_users + current_chats
+        should_replace = (
+            current_score == 0 or
+            (best_legacy_chats > current_chats and best_legacy_score > current_score)
+        )
+        if should_replace:
+            backup_file = f"{configured_db_path}.pre-legacy-sync.bak"
+            if not os.path.exists(backup_file):
+                shutil.copy2(configured_db_path, backup_file)
+            shutil.copy2(best_legacy_db, configured_db_path)
+            print(
+                "✓ 已从旧库补迁历史数据: "
+                f"{best_legacy_db} -> {configured_db_path} "
+                f"(legacy users/chats={best_legacy_users}/{best_legacy_chats}, "
+                f"current users/chats={current_users}/{current_chats})"
+            )
 
 app.config['SECRET_KEY'] = secret_key
 app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{configured_db_path}"
@@ -97,6 +185,13 @@ login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 login_manager.login_message = '请先登录'
 
+
+@login_manager.unauthorized_handler
+def handle_unauthorized():
+    if request.path.startswith('/api/'):
+        return jsonify({'success': False, 'message': '未登录或会话已失效'}), 401
+    return redirect(url_for('login'))
+
 # ============ 用户加载器 ============
 @login_manager.user_loader
 def load_user(user_id):
@@ -127,6 +222,39 @@ def enforce_rate_limit(scope, identity, limit, window_seconds=60):
     response.status_code = 429
     response.headers['Retry-After'] = str(retry_after)
     return response
+
+
+def get_ollama_base_urls():
+    configured = (app.config.get('OLLAMA_BASE_URL') or '').strip()
+    candidates = []
+    for url in [configured, 'http://127.0.0.1:11434', 'http://localhost:11434']:
+        if not url:
+            continue
+        normalized = url.rstrip('/')
+        if normalized not in candidates:
+            candidates.append(normalized)
+    return candidates
+
+
+def extract_model_names(payload):
+    if not isinstance(payload, dict):
+        return []
+    models = payload.get('models')
+    if not isinstance(models, list):
+        return []
+
+    model_names = []
+    for model in models:
+        if isinstance(model, str):
+            model_names.append(model)
+            continue
+        if not isinstance(model, dict):
+            continue
+        # Ollama 不同版本可能返回 name 或 model 字段
+        name = (model.get('name') or model.get('model') or '').strip()
+        if name:
+            model_names.append(name)
+    return model_names
 
 
 @app.before_request
@@ -253,23 +381,27 @@ def query_ollama(prompt, model=None):
         model = model or app.config['DEFAULT_MODEL']
         if not model:
             return {"error": "未指定模型，请先在Ollama中安装并选择模型"}
-        url = f"{app.config['OLLAMA_BASE_URL']}/api/generate"
-        
-        response = requests.post(url, json={
-            "model": model,
-            "prompt": prompt,
-            "stream": False
-        }, timeout=300)
-        
-        response.raise_for_status()
-        result = response.json()
-        
-        return {
-            "response": result.get("response", ""),
-            "eval_count": result.get("eval_count", 0)
-        }
-    except requests.exceptions.ConnectionError:
-        return {"error": "无法连接到Ollama服务，请确保Ollama已启动"}
+        last_error = None
+        for base_url in get_ollama_base_urls():
+            url = f"{base_url}/api/generate"
+            try:
+                response = requests.post(url, json={
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": False
+                }, timeout=300)
+                response.raise_for_status()
+                result = response.json()
+                return {
+                    "response": result.get("response", ""),
+                    "eval_count": result.get("eval_count", 0)
+                }
+            except requests.exceptions.RequestException as exc:
+                last_error = exc
+                continue
+        if last_error:
+            app.logger.warning('Ollama generate 调用失败: %s', last_error)
+        return {"error": "无法连接到Ollama服务，请确认服务地址与端口"}
     except Exception:
         app.logger.exception('Ollama API调用异常')
         return {"error": "Ollama服务调用失败，请稍后重试"}
@@ -530,33 +662,35 @@ def clear_history():
 def get_models():
     """获取可用的模型列表"""
     try:
-        # 尝试从Ollama获取模型列表
-        response = requests.get(f"{app.config['OLLAMA_BASE_URL']}/api/tags", timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            models = data.get('models', [])
-            
-            # 提取模型名称
-            model_names = []
-            for model in models:
-                if isinstance(model, dict) and 'name' in model:
-                    model_names.append(model['name'])
-                elif isinstance(model, str):
-                    model_names.append(model)
-            
-            # 若没有从Ollama读取到模型，则回退到配置的默认模型（若有）
-            if not model_names and app.config['DEFAULT_MODEL']:
-                model_names = [app.config['DEFAULT_MODEL']]
-            
-            print(f"✓ 获取到模型列表: {model_names}")
-            return jsonify({
-                'success': True,
-                'models': model_names
-            })
-        else:
-            print(f"⚠️ Ollama返回非200状态码: {response.status_code}")
-    except requests.exceptions.ConnectionError:
-        print("⚠️ 无法连接到Ollama服务")
+        last_status = None
+        saw_success_response = False
+        for base_url in get_ollama_base_urls():
+            try:
+                response = requests.get(f"{base_url}/api/tags", timeout=5)
+                if response.status_code != 200:
+                    last_status = response.status_code
+                    continue
+                saw_success_response = True
+                try:
+                    data = response.json()
+                except ValueError:
+                    app.logger.warning('Ollama /api/tags 返回了非 JSON 响应: %s', base_url)
+                    continue
+
+                model_names = extract_model_names(data)
+                if model_names:
+                    print(f"✓ 获取到模型列表: {model_names}")
+                    return jsonify({
+                        'success': True,
+                        'models': model_names
+                    })
+            except requests.exceptions.RequestException as exc:
+                app.logger.warning('Ollama /api/tags 请求失败: %s (%s)', base_url, exc)
+                continue
+        if last_status:
+            app.logger.warning('Ollama /api/tags 返回非200: %s', last_status)
+        if saw_success_response:
+            app.logger.info('Ollama /api/tags 可访问，但当前无可用模型')
     except Exception:
         app.logger.exception('获取模型列表失败')
     
