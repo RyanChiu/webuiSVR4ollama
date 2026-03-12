@@ -107,34 +107,8 @@ class ChatApp {
     }
 
     loadMarkedLibrary() {
-        if (window.marked) return;
-        
-        const script = document.createElement('script');
-        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/marked/4.3.0/marked.min.js';
-        script.onload = () => {
-            console.log('✓ Marked库加载成功');
-            if (window.marked) {
-                marked.setOptions({
-                    breaks: true,
-                    gfm: true,
-                    headerIds: true,
-                    mangle: false
-                });
-            }
-        };
-        script.onerror = () => {
-            console.warn('Marked库加载失败，使用简单渲染');
-        };
-        document.head.appendChild(script);
-        
-        const hljsScript = document.createElement('script');
-        hljsScript.src = 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js';
-        document.head.appendChild(hljsScript);
-        
-        const hljsCss = document.createElement('link');
-        hljsCss.rel = 'stylesheet';
-        hljsCss.href = 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/github-dark.min.css';
-        document.head.appendChild(hljsCss);
+        // 不再加载任何外部CDN资源，保持离线可用。
+        return;
     }
 
     renderMarkdown(text) {

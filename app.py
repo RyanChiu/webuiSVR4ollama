@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_from_directory
 from flask_login import LoginManager, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
@@ -822,6 +822,11 @@ def health():
         'authenticated': current_user.is_authenticated,
         'user': current_user.username if current_user.is_authenticated else None
     })
+
+
+@app.route('/favicon.ico')
+def favicon():
+    return send_from_directory(app.static_folder, 'favicon.svg', mimetype='image/svg+xml')
 
 # ============ Gunicorn入口 ============
 def create_app():

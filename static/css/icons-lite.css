@@ -1,0 +1,51 @@
+.fa,
+.fas,
+.far {
+    display: inline-block;
+    width: 1.2em;
+    text-align: center;
+    font-style: normal;
+    line-height: 1;
+}
+
+.fa::before,
+.fas::before,
+.far::before {
+    display: inline-block;
+}
+
+.fa-spin {
+    animation: icons-lite-spin 1s linear infinite;
+}
+
+@keyframes icons-lite-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.fa-history::before { content: "\1F558"; }
+.fa-trash::before,
+.fa-trash-alt::before { content: "\1F5D1"; }
+.fa-sync-alt::before { content: "\21BB"; }
+.fa-search::before { content: "\1F50D"; }
+.fa-spinner::before { content: "\25CC"; }
+.fa-robot::before { content: "\1F916"; }
+.fa-sign-in-alt::before { content: "\21AA"; }
+.fa-user-plus::before { content: "\FF0B"; }
+.fa-arrow-left::before { content: "\2190"; }
+.fa-info-circle::before { content: "\2139"; }
+.fa-clock::before { content: "\1F552"; }
+.fa-key::before { content: "\1F511"; }
+.fa-sign-out-alt::before { content: "\21E6"; }
+.fa-microchip::before { content: "\1F9E0"; }
+.fa-paper-plane::before { content: "\27A4"; }
+.fa-arrow-down::before { content: "\2193"; }
+.fa-eraser::before { content: "\232B"; }
+.fa-save::before { content: "\1F4BE"; }
+.fa-exclamation-triangle::before { content: "\26A0"; }
+.fa-inbox::before { content: "\1F4E5"; }
+.fa-user::before { content: "\1F464"; }
+.fa-copy::before { content: "\29C9"; }
+.fa-times::before { content: "\2715"; }
+.fa-eye::before { content: "\1F441"; }
+.fa-eye-slash::before { content: "\1F648"; }
