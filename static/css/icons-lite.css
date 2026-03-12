@@ -32,6 +32,7 @@
 .fa-robot::before { content: "\1F916"; }
 .fa-sign-in-alt::before { content: "\21AA"; }
 .fa-user-plus::before { content: "\FF0B"; }
+.fa-plus::before { content: "\FF0B"; }
 .fa-arrow-left::before { content: "\2190"; }
 .fa-info-circle::before { content: "\2139"; }
 .fa-clock::before { content: "\1F552"; }
@@ -46,6 +47,7 @@
 .fa-inbox::before { content: "\1F4E5"; }
 .fa-user::before { content: "\1F464"; }
 .fa-copy::before { content: "\29C9"; }
+.fa-pen::before { content: "\270E"; }
 .fa-times::before { content: "\2715"; }
 .fa-eye::before { content: "\1F441"; }
 .fa-eye-slash::before { content: "\1F648"; }

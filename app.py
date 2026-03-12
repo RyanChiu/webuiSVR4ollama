@@ -438,6 +438,7 @@ def ensure_db_schema_compatibility():
         ensure_column('chat_history', 'tokens_used', 'tokens_used INTEGER DEFAULT 0')
         ensure_column('chat_history', 'created_at', 'created_at DATETIME')
         ensure_column('chat_history', 'conversation_id', "conversation_id VARCHAR(64) DEFAULT ''")
+        ensure_column('chat_history', 'conversation_title', "conversation_title VARCHAR(120) DEFAULT ''")
 
         conn.commit()
     except Exception:
@@ -686,6 +687,28 @@ def chat():
             return jsonify({'success': False, 'message': '会话标识无效'})
         if not conversation_id:
             conversation_id = secrets.token_hex(12)
+
+        conversation_title = ''
+        if conversation_id.startswith('legacy-'):
+            try:
+                legacy_id = int(conversation_id.split('-', 1)[1])
+                legacy_chat = ChatHistory.query.filter_by(id=legacy_id, user_id=current_user.id).first()
+                if legacy_chat:
+                    conversation_title = (legacy_chat.conversation_title or '').strip() or (legacy_chat.question or '')[:60]
+            except (IndexError, ValueError):
+                return jsonify({'success': False, 'message': '会话标识无效'})
+        else:
+            existing_chat = (
+                ChatHistory.query
+                .filter_by(user_id=current_user.id, conversation_id=conversation_id)
+                .order_by(ChatHistory.created_at.desc())
+                .first()
+            )
+            if existing_chat:
+                conversation_title = (existing_chat.conversation_title or '').strip() or (existing_chat.question or '')[:60]
+
+        if not conversation_title:
+            conversation_title = question[:60]
         
         result = query_ollama(question, model)
         
@@ -699,6 +722,7 @@ def chat():
         chat = ChatHistory(
             user_id=current_user.id,
             conversation_id=conversation_id,
+            conversation_title=conversation_title,
             question=question,
             answer=raw_answer,
             answer_html=html_answer,
@@ -714,6 +738,7 @@ def chat():
             'answer_html': html_answer,
             'history_id': chat.id,
             'conversation_id': conversation_id,
+            'conversation_title': conversation_title,
             'tokens_used': result.get('eval_count', 0)
         })
     except Exception:
@@ -761,6 +786,7 @@ def get_history():
                     seen.add(conv_id)
                     history_list.append({
                         'conversation_id': conv_id,
+                        'title': (item.conversation_title or '').strip() or (item.question or '')[:60],
                         'question': item.question,
                         'created_at': format_datetime_value(item.created_at),
                         'model': item.model or ''
@@ -814,6 +840,7 @@ def delete_history(history_id):
                 chat.answer_html = rendered
                 db.session.commit()
             history_data['conversation_id'] = (chat.conversation_id or '').strip() or f"legacy-{chat.id}"
+            history_data['conversation_title'] = (chat.conversation_title or '').strip() or (chat.question or '')[:60]
             return jsonify({'success': True, 'history': history_data})
 
         db.session.delete(chat)
@@ -856,6 +883,7 @@ def conversation_detail(conversation_id):
 
         history_list = []
         pending_render_updates = False
+        effective_title = ''
         for chat in chats:
             data = chat.to_dict()
             if not data.get('answer_html'):
@@ -864,6 +892,9 @@ def conversation_detail(conversation_id):
                 chat.answer_html = rendered
                 pending_render_updates = True
             data['conversation_id'] = (chat.conversation_id or '').strip() or f"legacy-{chat.id}"
+            data['conversation_title'] = (chat.conversation_title or '').strip() or (chat.question or '')[:60]
+            if not effective_title and data['conversation_title']:
+                effective_title = data['conversation_title']
             history_list.append(data)
 
         if pending_render_updates:
@@ -872,6 +903,7 @@ def conversation_detail(conversation_id):
         return jsonify({
             'success': True,
             'conversation_id': conversation_id,
+            'conversation_title': effective_title,
             'history': history_list
         })
     except Exception:
@@ -879,6 +911,49 @@ def conversation_detail(conversation_id):
         if request.method == 'DELETE':
             return jsonify({'success': False, 'message': '删除会话失败'}), 500
         return jsonify({'success': False, 'message': '获取会话失败'}), 500
+
+
+@app.route('/api/conversations/<conversation_id>/title', methods=['PATCH'])
+@login_required
+def update_conversation_title(conversation_id):
+    try:
+        conversation_id = (conversation_id or '').strip()
+        if not conversation_id:
+            return jsonify({'success': False, 'message': '会话标识不能为空'}), 400
+
+        data = request.get_json(silent=True) or {}
+        title = (data.get('title') or '').strip()
+        if not title:
+            return jsonify({'success': False, 'message': '标题不能为空'}), 400
+        if len(title) > 120:
+            return jsonify({'success': False, 'message': '标题长度不能超过120字符'}), 400
+
+        query = ChatHistory.query.filter_by(user_id=current_user.id)
+        if conversation_id.startswith('legacy-'):
+            try:
+                legacy_id = int(conversation_id.split('-', 1)[1])
+            except (IndexError, ValueError):
+                return jsonify({'success': False, 'message': '会话标识无效'}), 400
+            query = query.filter_by(id=legacy_id)
+        else:
+            query = query.filter_by(conversation_id=conversation_id)
+
+        chats = query.all()
+        if not chats:
+            return jsonify({'success': False, 'message': '会话不存在'}), 404
+
+        for chat in chats:
+            chat.conversation_title = title
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+            'conversation_id': conversation_id,
+            'conversation_title': title
+        })
+    except Exception:
+        app.logger.exception('更新会话标题异常')
+        return jsonify({'success': False, 'message': '更新会话标题失败'}), 500
 
 @app.route('/api/clear_history', methods=['DELETE'])
 @login_required

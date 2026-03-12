@@ -70,7 +70,7 @@ class ChatApp {
 
         const clearChatBtn = document.getElementById('clearChat');
         if (clearChatBtn) {
-            clearChatBtn.addEventListener('click', () => this.clearChat());
+            clearChatBtn.addEventListener('click', () => this.startNewConversation());
         }
 
         const logoutBtn = document.getElementById('logoutBtn');
@@ -276,9 +276,8 @@ class ChatApp {
         this.allHistory.forEach(item => {
             const conversationId = String(item.conversation_id || '');
             if (!conversationId) return;
-            const question = item.question && item.question.length > 50 
-                ? item.question.substring(0, 50) + '...' 
-                : item.question || '空消息';
+            const title = item.title || item.conversation_title || item.question || '未命名对话';
+            const displayTitle = title.length > 50 ? title.substring(0, 50) + '...' : title;
             
             let timeStr = '未知时间';
             if (item.created_at) {
@@ -295,12 +294,17 @@ class ChatApp {
             
             html += `
                 <div class="history-item ${activeClass}" data-conversation-id="${this.escapeHtml(conversationId)}">
-                    <h4 title="${this.escapeHtml(item.question || '')}">${this.escapeHtml(question)}</h4>
+                    <h4 title="${this.escapeHtml(title)}">${this.escapeHtml(displayTitle)}</h4>
                     <div class="history-meta">
                         <span><i class="far fa-clock"></i> ${timeStr}</span>
-                        <button class="delete-history" onclick="app.deleteHistoryItem('${encodedConversationId}', event)">
-                            <i class="fas fa-trash-alt"></i>
-                        </button>
+                        <div class="history-actions">
+                            <button class="rename-history" onclick="app.renameConversationItem('${encodedConversationId}', event)">
+                                <i class="fas fa-pen"></i>
+                            </button>
+                            <button class="delete-history" onclick="app.deleteHistoryItem('${encodedConversationId}', event)">
+                                <i class="fas fa-trash-alt"></i>
+                            </button>
+                        </div>
                     </div>
                 </div>
             `;
@@ -362,6 +366,7 @@ class ChatApp {
                     
                     const input = document.getElementById('questionInput');
                     if (input) input.focus();
+                    this.showToast('已载入历史会话', 'info');
                 }
             }
         } catch (error) {
@@ -650,6 +655,7 @@ class ChatApp {
         }
         
         const filtered = this.allHistory.filter(item => 
+            (item.title && item.title.toLowerCase().includes(this.searchTerm.toLowerCase())) ||
             (item.question && item.question.toLowerCase().includes(this.searchTerm.toLowerCase())) ||
             (item.model && item.model.toLowerCase().includes(this.searchTerm.toLowerCase()))
         );
@@ -672,9 +678,8 @@ class ChatApp {
             const conversationId = String(item.conversation_id || '');
             if (!conversationId) return;
             const encodedConversationId = encodeURIComponent(conversationId);
-            const question = item.question && item.question.length > 50 
-                ? item.question.substring(0, 50) + '...' 
-                : item.question || '空消息';
+            const title = item.title || item.conversation_title || item.question || '未命名对话';
+            const displayTitle = title.length > 50 ? title.substring(0, 50) + '...' : title;
             
             let timeStr = '';
             if (item.created_at) {
@@ -689,12 +694,17 @@ class ChatApp {
             const activeClass = this.currentConversationId === conversationId ? 'active' : '';
             html += `
                 <div class="history-item ${activeClass}" data-conversation-id="${this.escapeHtml(conversationId)}">
-                    <h4 title="${this.escapeHtml(item.question || '')}">${this.escapeHtml(question)}</h4>
+                    <h4 title="${this.escapeHtml(title)}">${this.escapeHtml(displayTitle)}</h4>
                     <div class="history-meta">
                         <span><i class="fas fa-clock"></i> ${timeStr}</span>
-                        <button class="delete-history" onclick="app.deleteHistoryItem('${encodedConversationId}', event)">
-                            <i class="fas fa-trash-alt"></i>
-                        </button>
+                        <div class="history-actions">
+                            <button class="rename-history" onclick="app.renameConversationItem('${encodedConversationId}', event)">
+                                <i class="fas fa-pen"></i>
+                            </button>
+                            <button class="delete-history" onclick="app.deleteHistoryItem('${encodedConversationId}', event)">
+                                <i class="fas fa-trash-alt"></i>
+                            </button>
+                        </div>
                     </div>
                 </div>
             `;
@@ -782,6 +792,58 @@ class ChatApp {
 
     refreshHistory() {
         this.loadHistory();
+    }
+
+    startNewConversation() {
+        this.clearChat();
+        this.showToast('已新建对话', 'info');
+        const input = document.getElementById('questionInput');
+        if (input) input.focus();
+    }
+
+    async renameConversationItem(conversationIdEncoded, event) {
+        if (event) event.stopPropagation();
+        const conversationId = decodeURIComponent(conversationIdEncoded || '').trim();
+        if (!conversationId) return;
+
+        const target = this.allHistory.find(item => String(item.conversation_id || '') === conversationId);
+        const oldTitle = (target && (target.title || target.question)) ? (target.title || target.question) : '';
+        const newTitle = prompt('请输入新的会话标题：', oldTitle);
+        if (newTitle === null) return;
+        const title = newTitle.trim();
+        if (!title) {
+            this.showToast('标题不能为空', 'warning');
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/conversations/' + encodeURIComponent(conversationId) + '/title', {
+                method: 'PATCH',
+                headers: this.withCsrfHeaders({
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                }),
+                body: JSON.stringify({ title })
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const data = await response.json();
+            if (!data.success) {
+                throw new Error(data.message || '更新标题失败');
+            }
+
+            if (target) {
+                target.title = title;
+            }
+            this.renderHistoryList();
+            this.showToast('标题已更新', 'success');
+        } catch (error) {
+            console.error('更新会话标题失败:', error);
+            this.showToast('更新标题失败: ' + error.message, 'error');
+        }
     }
 
     clearChat() {
