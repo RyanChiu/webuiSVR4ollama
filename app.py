@@ -7,7 +7,6 @@ import os
 import shutil
 import sqlite3
 import glob
-import subprocess
 import secrets
 import hmac
 import time
@@ -298,32 +297,18 @@ def extract_model_names(payload):
     return model_names
 
 
-def extract_model_names_from_cli():
-    try:
-        result = subprocess.run(
-            ['ollama', 'list'],
-            capture_output=True,
-            text=True,
-            timeout=8,
-            check=False
-        )
-        if result.returncode != 0:
-            app.logger.warning('执行 ollama list 失败: %s', result.stderr.strip())
-            return []
+def safe_requests_get(url, timeout):
+    # 忽略环境代理，避免 localhost 请求被 http_proxy/https_proxy 劫持
+    with requests.Session() as session:
+        session.trust_env = False
+        return session.get(url, timeout=timeout)
 
-        model_names = []
-        for line in result.stdout.splitlines():
-            row = line.strip()
-            if not row or row.lower().startswith('name '):
-                continue
-            # ollama list 默认第一列是模型名
-            name = row.split()[0].strip()
-            if name:
-                model_names.append(name)
-        return model_names
-    except Exception:
-        app.logger.exception('从 ollama list 解析模型失败')
-        return []
+
+def safe_requests_post(url, payload, timeout):
+    # 忽略环境代理，避免 localhost 请求被 http_proxy/https_proxy 劫持
+    with requests.Session() as session:
+        session.trust_env = False
+        return session.post(url, json=payload, timeout=timeout)
 
 
 @app.before_request
@@ -501,7 +486,7 @@ def query_ollama(prompt, model=None):
         for base_url in get_ollama_base_urls():
             url = f"{base_url}/api/generate"
             try:
-                response = requests.post(url, json={
+                response = safe_requests_post(url, {
                     "model": model,
                     "prompt": prompt,
                     "stream": False
@@ -795,7 +780,7 @@ def get_models():
         saw_success_response = False
         for base_url in get_ollama_base_urls():
             try:
-                response = requests.get(f"{base_url}/api/tags", timeout=5)
+                response = safe_requests_get(f"{base_url}/api/tags", timeout=5)
                 if response.status_code != 200:
                     last_status = response.status_code
                     continue
@@ -822,14 +807,6 @@ def get_models():
             app.logger.info('Ollama /api/tags 可访问，但当前无可用模型')
     except Exception:
         app.logger.exception('获取模型列表失败')
-
-    cli_models = extract_model_names_from_cli()
-    if cli_models:
-        app.logger.info('已从 ollama list 获取模型: %s', cli_models)
-        return jsonify({
-            'success': True,
-            'models': cli_models
-        })
     
     # 如果获取失败，回退到配置的默认模型（若有）
     fallback_models = [app.config['DEFAULT_MODEL']] if app.config['DEFAULT_MODEL'] else []
