@@ -227,7 +227,7 @@ class ChatApp {
         if (!historyList) return;
         
         try {
-            const response = await fetch('/api/history');
+            const response = await fetch('/api/history?summary=1&limit=300');
             if (!response.ok) {
                 if (response.status === 401) {
                     window.location.href = '/login';
@@ -317,14 +317,14 @@ class ChatApp {
 
     async loadConversation(historyId) {
         try {
-            const response = await fetch('/api/history');
+            const response = await fetch('/api/history/' + historyId);
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
             const data = await response.json();
             
             if (data.success) {
-                const historyItem = data.history.find(h => h.id === historyId);
+                const historyItem = data.history;
                 if (historyItem) {
                     this.currentConversationId = historyId;
                     this.currentHistory = [

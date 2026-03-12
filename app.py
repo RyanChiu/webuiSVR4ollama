@@ -20,7 +20,7 @@ from markdown.extensions.tables import TableExtension
 from markdown.extensions.toc import TocExtension
 
 # 导入数据库模型
-from database import db, User, ChatHistory
+from database import db, User, ChatHistory, format_datetime_value
 
 # 初始化 Flask
 app = Flask(__name__)
@@ -716,6 +716,12 @@ def chat():
 def get_history():
     try:
         search = request.args.get('search', '').strip()
+        summary = request.args.get('summary', '0').strip() in {'1', 'true', 'yes'}
+        try:
+            limit = int(request.args.get('limit', '300'))
+        except ValueError:
+            limit = 300
+        limit = max(1, min(limit, 1000))
         
         query = ChatHistory.query.filter_by(user_id=current_user.id)
         
@@ -725,19 +731,35 @@ def get_history():
                 (ChatHistory.answer.ilike(f'%{search}%'))
             )
         
-        history = query.order_by(ChatHistory.created_at.desc()).all()
+        history = query.order_by(ChatHistory.created_at.desc()).limit(limit).all()
         
         history_list = []
+        pending_render_updates = False
         for item in history:
             try:
+                if summary:
+                    history_list.append({
+                        'id': item.id,
+                        'question': item.question,
+                        'created_at': format_datetime_value(item.created_at),
+                        'model': item.model or ''
+                    })
+                    continue
+
                 history_data = item.to_dict()
                 # 如果没有HTML版本，就染一个
                 if not history_data.get('answer_html'):
-                    history_data['answer_html'] = render_markdown(item.answer)
+                    rendered = render_markdown(item.answer)
+                    history_data['answer_html'] = rendered
+                    item.answer_html = rendered
+                    pending_render_updates = True
                 history_list.append(history_data)
             except Exception:
                 app.logger.exception('历史记录序列化失败，跳过 id=%s', getattr(item, 'id', None))
                 continue
+
+        if pending_render_updates:
+            db.session.commit()
         
         return jsonify({
             'success': True,
@@ -747,18 +769,30 @@ def get_history():
         app.logger.exception('获取历史记录异常')
         return jsonify({'success': False, 'message': '获取历史记录失败'}), 500
 
-@app.route('/api/history/<int:history_id>', methods=['DELETE'])
+@app.route('/api/history/<int:history_id>', methods=['GET', 'DELETE'])
 @login_required
 def delete_history(history_id):
     try:
         chat = ChatHistory.query.filter_by(id=history_id, user_id=current_user.id).first()
-        if chat:
-            db.session.delete(chat)
-            db.session.commit()
-            return jsonify({'success': True})
-        return jsonify({'success': False, 'message': '记录不存在'}), 404
+        if not chat:
+            return jsonify({'success': False, 'message': '记录不存在'}), 404
+
+        if request.method == 'GET':
+            history_data = chat.to_dict()
+            if not history_data.get('answer_html'):
+                rendered = render_markdown(chat.answer)
+                history_data['answer_html'] = rendered
+                chat.answer_html = rendered
+                db.session.commit()
+            return jsonify({'success': True, 'history': history_data})
+
+        db.session.delete(chat)
+        db.session.commit()
+        return jsonify({'success': True})
     except Exception:
-        app.logger.exception('删除历史记录异常')
+        app.logger.exception('历史记录操作异常')
+        if request.method == 'GET':
+            return jsonify({'success': False, 'message': '获取记录失败'}), 500
         return jsonify({'success': False, 'message': '删除失败'}), 500
 
 @app.route('/api/clear_history', methods=['DELETE'])
