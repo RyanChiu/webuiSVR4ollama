@@ -274,6 +274,8 @@ class ChatApp {
         
         let html = '';
         this.allHistory.forEach(item => {
+            const conversationId = String(item.conversation_id || '');
+            if (!conversationId) return;
             const question = item.question && item.question.length > 50 
                 ? item.question.substring(0, 50) + '...' 
                 : item.question || '空消息';
@@ -288,14 +290,15 @@ class ChatApp {
                 }
             }
             
-            const activeClass = this.currentConversationId === item.id ? 'active' : '';
+            const activeClass = this.currentConversationId === conversationId ? 'active' : '';
+            const encodedConversationId = encodeURIComponent(conversationId);
             
             html += `
-                <div class="history-item ${activeClass}" data-id="${item.id}">
+                <div class="history-item ${activeClass}" data-conversation-id="${this.escapeHtml(conversationId)}">
                     <h4 title="${this.escapeHtml(item.question || '')}">${this.escapeHtml(question)}</h4>
                     <div class="history-meta">
                         <span><i class="far fa-clock"></i> ${timeStr}</span>
-                        <button class="delete-history" onclick="app.deleteHistoryItem(${item.id}, event)">
+                        <button class="delete-history" onclick="app.deleteHistoryItem('${encodedConversationId}', event)">
                             <i class="fas fa-trash-alt"></i>
                         </button>
                     </div>
@@ -304,48 +307,55 @@ class ChatApp {
         });
         
         historyList.innerHTML = html;
-        
+        this.bindHistoryItemClickEvents();
+    }
+
+    bindHistoryItemClickEvents() {
         document.querySelectorAll('.history-item').forEach(item => {
             item.addEventListener('click', (e) => {
                 if (!e.target.closest('.delete-history')) {
-                    const historyId = parseInt(item.dataset.id);
-                    this.loadConversation(historyId);
+                    const conversationId = (item.dataset.conversationId || '').trim();
+                    if (conversationId) {
+                        this.loadConversation(conversationId);
+                    }
                 }
             });
         });
     }
 
-    async loadConversation(historyId) {
+    async loadConversation(conversationId) {
         try {
-            const response = await fetch('/api/history/' + historyId);
+            const response = await fetch('/api/conversations/' + encodeURIComponent(conversationId));
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
             const data = await response.json();
             
             if (data.success) {
-                const historyItem = data.history;
-                if (historyItem) {
-                    this.currentConversationId = historyId;
-                    this.currentHistory = [
-                        { type: 'question', content: historyItem.question || '' },
-                        { type: 'answer', content: historyItem.answer || '' }
-                    ];
-                    
+                const conversationHistory = Array.isArray(data.history) ? data.history : [];
+                if (conversationHistory.length > 0) {
+                    this.currentConversationId = conversationId;
+                    this.currentHistory = [];
+
                     this.renderHistoryList();
-                    
+
                     const messagesContainer = document.getElementById('messages');
                     if (messagesContainer) {
                         messagesContainer.innerHTML = '';
-                        
-                        this.displayMessage('question', historyItem.question, false);
-                        
-                        if (historyItem.answer_html) {
-                            this.displayMessage('answer', historyItem.answer_html, true);
-                        } else {
-                            const safeHtml = this.escapeHtml(historyItem.answer || '').replace(/\n/g, '<br>');
-                            this.displayMessage('answer', safeHtml, true);
-                        }
+
+                        conversationHistory.forEach(historyItem => {
+                            this.displayMessage('question', historyItem.question || '', false);
+                            if (historyItem.answer_html) {
+                                this.displayMessage('answer', historyItem.answer_html, true);
+                            } else {
+                                const safeHtml = this.escapeHtml(historyItem.answer || '').replace(/\n/g, '<br>');
+                                this.displayMessage('answer', safeHtml, true);
+                            }
+                            this.currentHistory.push(
+                                { type: 'question', content: historyItem.question || '' },
+                                { type: 'answer', content: historyItem.answer || '' }
+                            );
+                        });
                     }
                     
                     this.scrollToBottom();
@@ -454,7 +464,8 @@ class ChatApp {
                 }),
                 body: JSON.stringify({ 
                     question: prompt, 
-                    model: model 
+                    model: model,
+                    conversation_id: this.currentConversationId || ''
                 })
             });
             
@@ -469,6 +480,9 @@ class ChatApp {
             if (data.success) {
                 const safeAnswerHtml = data.answer_html || this.escapeHtml(data.answer || '').replace(/\n/g, '<br>');
                 this.displayMessage('answer', safeAnswerHtml, true);
+                if (data.conversation_id) {
+                    this.currentConversationId = String(data.conversation_id);
+                }
                 
                 this.currentHistory.push(
                     { type: 'question', content: question },
@@ -637,7 +651,7 @@ class ChatApp {
         
         const filtered = this.allHistory.filter(item => 
             (item.question && item.question.toLowerCase().includes(this.searchTerm.toLowerCase())) ||
-            (item.answer && item.answer.toLowerCase().includes(this.searchTerm.toLowerCase()))
+            (item.model && item.model.toLowerCase().includes(this.searchTerm.toLowerCase()))
         );
         
         if (filtered.length === 0) {
@@ -655,6 +669,9 @@ class ChatApp {
         
         let html = '';
         filtered.forEach(item => {
+            const conversationId = String(item.conversation_id || '');
+            if (!conversationId) return;
+            const encodedConversationId = encodeURIComponent(conversationId);
             const question = item.question && item.question.length > 50 
                 ? item.question.substring(0, 50) + '...' 
                 : item.question || '空消息';
@@ -669,12 +686,13 @@ class ChatApp {
                 }
             }
             
+            const activeClass = this.currentConversationId === conversationId ? 'active' : '';
             html += `
-                <div class="history-item" data-id="${item.id}">
+                <div class="history-item ${activeClass}" data-conversation-id="${this.escapeHtml(conversationId)}">
                     <h4 title="${this.escapeHtml(item.question || '')}">${this.escapeHtml(question)}</h4>
                     <div class="history-meta">
                         <span><i class="fas fa-clock"></i> ${timeStr}</span>
-                        <button class="delete-history" onclick="app.deleteHistoryItem(${item.id}, event)">
+                        <button class="delete-history" onclick="app.deleteHistoryItem('${encodedConversationId}', event)">
                             <i class="fas fa-trash-alt"></i>
                         </button>
                     </div>
@@ -683,6 +701,7 @@ class ChatApp {
         });
         
         historyList.innerHTML = html;
+        this.bindHistoryItemClickEvents();
     }
 
     async clearHistory() {
@@ -720,15 +739,17 @@ class ChatApp {
         }
     }
 
-    async deleteHistoryItem(id, event) {
+    async deleteHistoryItem(conversationIdEncoded, event) {
         if (event) event.stopPropagation();
+        const conversationId = decodeURIComponent(conversationIdEncoded || '').trim();
+        if (!conversationId) return;
         
         if (!confirm('确定要删除这条记录吗？')) {
             return;
         }
         
         try {
-            const response = await fetch('/api/history/' + id, { 
+            const response = await fetch('/api/conversations/' + encodeURIComponent(conversationId), { 
                 method: 'DELETE',
                 headers: this.withCsrfHeaders({
                     'Accept': 'application/json'
@@ -744,7 +765,7 @@ class ChatApp {
             if (data.success) {
                 this.showToast('记录已删除', 'success');
                 
-                if (this.currentConversationId === id) {
+                if (this.currentConversationId === conversationId) {
                     this.clearChat();
                     this.currentConversationId = null;
                 }

@@ -437,6 +437,7 @@ def ensure_db_schema_compatibility():
         ensure_column('chat_history', 'model', "model VARCHAR(100) DEFAULT ''")
         ensure_column('chat_history', 'tokens_used', 'tokens_used INTEGER DEFAULT 0')
         ensure_column('chat_history', 'created_at', 'created_at DATETIME')
+        ensure_column('chat_history', 'conversation_id', "conversation_id VARCHAR(64) DEFAULT ''")
 
         conn.commit()
     except Exception:
@@ -671,6 +672,7 @@ def chat():
         
         question = data.get('question', '').strip()
         model = (data.get('model') or app.config['DEFAULT_MODEL']).strip()
+        conversation_id = (data.get('conversation_id') or '').strip()
         
         if not question:
             return jsonify({'success': False, 'message': '问题不能为空'})
@@ -679,6 +681,11 @@ def chat():
         
         if len(question) > app.config['MAX_QUESTION_CHARS']:
             return jsonify({'success': False, 'message': f"问题过长，最多 {app.config['MAX_QUESTION_CHARS']} 字符"})
+
+        if conversation_id and (len(conversation_id) > 64 or '/' in conversation_id):
+            return jsonify({'success': False, 'message': '会话标识无效'})
+        if not conversation_id:
+            conversation_id = secrets.token_hex(12)
         
         result = query_ollama(question, model)
         
@@ -691,6 +698,7 @@ def chat():
         
         chat = ChatHistory(
             user_id=current_user.id,
+            conversation_id=conversation_id,
             question=question,
             answer=raw_answer,
             answer_html=html_answer,
@@ -705,6 +713,7 @@ def chat():
             'answer': raw_answer,
             'answer_html': html_answer,
             'history_id': chat.id,
+            'conversation_id': conversation_id,
             'tokens_used': result.get('eval_count', 0)
         })
     except Exception:
@@ -730,36 +739,56 @@ def get_history():
                 (ChatHistory.question.ilike(f'%{search}%')) |
                 (ChatHistory.answer.ilike(f'%{search}%'))
             )
-        
-        history = query.order_by(ChatHistory.created_at.desc()).limit(limit).all()
-        
+
+        fetch_limit = limit
+        if summary:
+            fetch_limit = min(max(limit * 20, limit), 5000)
+
+        history = query.order_by(ChatHistory.created_at.desc()).limit(fetch_limit).all()
+
+        def conversation_key(item):
+            conv = (item.conversation_id or '').strip()
+            return conv if conv else f"legacy-{item.id}"
+
         history_list = []
-        pending_render_updates = False
-        for item in history:
-            try:
-                if summary:
+        if summary:
+            seen = set()
+            for item in history:
+                try:
+                    conv_id = conversation_key(item)
+                    if conv_id in seen:
+                        continue
+                    seen.add(conv_id)
                     history_list.append({
-                        'id': item.id,
+                        'conversation_id': conv_id,
                         'question': item.question,
                         'created_at': format_datetime_value(item.created_at),
                         'model': item.model or ''
                     })
+                    if len(history_list) >= limit:
+                        break
+                except Exception:
+                    app.logger.exception('历史摘要序列化失败，跳过 id=%s', getattr(item, 'id', None))
+                    continue
+        else:
+            pending_render_updates = False
+            for item in history:
+                try:
+                    history_data = item.to_dict()
+                    # 如果没有HTML版本，就染一个
+                    if not history_data.get('answer_html'):
+                        rendered = render_markdown(item.answer)
+                        history_data['answer_html'] = rendered
+                        item.answer_html = rendered
+                        pending_render_updates = True
+                    history_data['conversation_id'] = conversation_key(item)
+                    history_list.append(history_data)
+                except Exception:
+                    app.logger.exception('历史记录序列化失败，跳过 id=%s', getattr(item, 'id', None))
                     continue
 
-                history_data = item.to_dict()
-                # 如果没有HTML版本，就染一个
-                if not history_data.get('answer_html'):
-                    rendered = render_markdown(item.answer)
-                    history_data['answer_html'] = rendered
-                    item.answer_html = rendered
-                    pending_render_updates = True
-                history_list.append(history_data)
-            except Exception:
-                app.logger.exception('历史记录序列化失败，跳过 id=%s', getattr(item, 'id', None))
-                continue
-
-        if pending_render_updates:
-            db.session.commit()
+            if pending_render_updates:
+                db.session.commit()
         
         return jsonify({
             'success': True,
@@ -784,6 +813,7 @@ def delete_history(history_id):
                 history_data['answer_html'] = rendered
                 chat.answer_html = rendered
                 db.session.commit()
+            history_data['conversation_id'] = (chat.conversation_id or '').strip() or f"legacy-{chat.id}"
             return jsonify({'success': True, 'history': history_data})
 
         db.session.delete(chat)
@@ -794,6 +824,61 @@ def delete_history(history_id):
         if request.method == 'GET':
             return jsonify({'success': False, 'message': '获取记录失败'}), 500
         return jsonify({'success': False, 'message': '删除失败'}), 500
+
+
+@app.route('/api/conversations/<conversation_id>', methods=['GET', 'DELETE'])
+@login_required
+def conversation_detail(conversation_id):
+    try:
+        conversation_id = (conversation_id or '').strip()
+        if not conversation_id:
+            return jsonify({'success': False, 'message': '会话标识不能为空'}), 400
+
+        query = ChatHistory.query.filter_by(user_id=current_user.id)
+        if conversation_id.startswith('legacy-'):
+            try:
+                legacy_id = int(conversation_id.split('-', 1)[1])
+            except (IndexError, ValueError):
+                return jsonify({'success': False, 'message': '会话标识无效'}), 400
+            query = query.filter_by(id=legacy_id)
+        else:
+            query = query.filter_by(conversation_id=conversation_id)
+
+        chats = query.order_by(ChatHistory.created_at.asc()).all()
+        if not chats:
+            return jsonify({'success': False, 'message': '会话不存在'}), 404
+
+        if request.method == 'DELETE':
+            for chat in chats:
+                db.session.delete(chat)
+            db.session.commit()
+            return jsonify({'success': True})
+
+        history_list = []
+        pending_render_updates = False
+        for chat in chats:
+            data = chat.to_dict()
+            if not data.get('answer_html'):
+                rendered = render_markdown(chat.answer)
+                data['answer_html'] = rendered
+                chat.answer_html = rendered
+                pending_render_updates = True
+            data['conversation_id'] = (chat.conversation_id or '').strip() or f"legacy-{chat.id}"
+            history_list.append(data)
+
+        if pending_render_updates:
+            db.session.commit()
+
+        return jsonify({
+            'success': True,
+            'conversation_id': conversation_id,
+            'history': history_list
+        })
+    except Exception:
+        app.logger.exception('会话记录操作异常')
+        if request.method == 'DELETE':
+            return jsonify({'success': False, 'message': '删除会话失败'}), 500
+        return jsonify({'success': False, 'message': '获取会话失败'}), 500
 
 @app.route('/api/clear_history', methods=['DELETE'])
 @login_required

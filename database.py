@@ -76,6 +76,7 @@ class ChatHistory(db.Model):
     
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    conversation_id = db.Column(db.String(64), default='', index=True)
     question = db.Column(db.Text, nullable=False)
     answer = db.Column(db.Text, nullable=False)
     answer_html = db.Column(db.Text, default='')
@@ -88,6 +89,7 @@ class ChatHistory(db.Model):
         return {
             'id': self.id,
             'user_id': self.user_id,
+            'conversation_id': self.conversation_id or '',
             'question': self.question,
             'answer': self.answer,
             'answer_html': self.answer_html or self.answer,
