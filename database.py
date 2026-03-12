@@ -5,6 +5,31 @@ from datetime import datetime
 
 db = SQLAlchemy()
 
+
+def format_datetime_value(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.strftime('%Y-%m-%d %H:%M:%S')
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        for fmt in (
+            '%Y-%m-%d %H:%M:%S',
+            '%Y-%m-%d %H:%M:%S.%f',
+            '%Y-%m-%dT%H:%M:%S',
+            '%Y-%m-%dT%H:%M:%S.%f',
+            '%Y-%m-%d'
+        ):
+            try:
+                dt = datetime.strptime(text, fmt)
+                return dt.strftime('%Y-%m-%d %H:%M:%S')
+            except ValueError:
+                continue
+        return text
+    return str(value)
+
 class User(db.Model, UserMixin):
     """用户模型"""
     __tablename__ = 'users'
@@ -37,8 +62,8 @@ class User(db.Model, UserMixin):
         return {
             'id': self.id,
             'username': self.username,
-            'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S') if self.created_at else None,
-            'last_login': self.last_login.strftime('%Y-%m-%d %H:%M:%S') if self.last_login else None
+            'created_at': format_datetime_value(self.created_at),
+            'last_login': format_datetime_value(self.last_login)
         }
     
     def __repr__(self):
@@ -67,7 +92,7 @@ class ChatHistory(db.Model):
             'answer': self.answer,
             'answer_html': self.answer_html or self.answer,
             'model': self.model,
-            'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S') if self.created_at else None,
+            'created_at': format_datetime_value(self.created_at),
             'tokens_used': self.tokens_used or 0
         }
     

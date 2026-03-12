@@ -415,9 +415,56 @@ def render_markdown(text):
     return clean_html
 
 # ============ 数据库初始化 ============
+def ensure_db_schema_compatibility():
+    if not os.path.exists(configured_db_path):
+        return
+
+    conn = None
+    try:
+        conn = sqlite3.connect(configured_db_path)
+        cursor = conn.cursor()
+
+        def table_columns(table_name):
+            cursor.execute(f"PRAGMA table_info({table_name})")
+            return {row[1] for row in cursor.fetchall()}
+
+        def table_exists(table_name):
+            cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (table_name,)
+            )
+            return cursor.fetchone() is not None
+
+        def ensure_column(table_name, column_name, ddl):
+            if not table_exists(table_name):
+                return
+            existing = table_columns(table_name)
+            if column_name in existing:
+                return
+            cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {ddl}")
+            print(f"✓ 已补齐字段: {table_name}.{column_name}")
+
+        ensure_column('users', 'created_at', 'created_at DATETIME')
+        ensure_column('users', 'last_login', 'last_login DATETIME')
+        ensure_column('users', 'is_active', 'is_active BOOLEAN DEFAULT 1')
+
+        ensure_column('chat_history', 'answer_html', "answer_html TEXT DEFAULT ''")
+        ensure_column('chat_history', 'model', "model VARCHAR(100) DEFAULT ''")
+        ensure_column('chat_history', 'tokens_used', 'tokens_used INTEGER DEFAULT 0')
+        ensure_column('chat_history', 'created_at', 'created_at DATETIME')
+
+        conn.commit()
+    except Exception:
+        app.logger.exception('数据库兼容字段补齐失败')
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def init_db():
     """初始化数据库"""
     with app.app_context():
+        ensure_db_schema_compatibility()
         # 创建所有表
         db.create_all()
         print("✓ 数据库表创建成功")
@@ -605,9 +652,19 @@ def logout():
 @app.route('/api/user/info')
 @login_required
 def user_info():
+    try:
+        user_payload = current_user.to_dict()
+    except Exception:
+        app.logger.exception('用户信息序列化失败，回退基础字段')
+        user_payload = {
+            'id': current_user.id,
+            'username': current_user.username,
+            'created_at': str(getattr(current_user, 'created_at', '') or ''),
+            'last_login': str(getattr(current_user, 'last_login', '') or '')
+        }
     return jsonify({
         'success': True,
-        'user': current_user.to_dict()
+        'user': user_payload
     })
 
 @app.route('/api/chat', methods=['POST'])
@@ -687,11 +744,15 @@ def get_history():
         
         history_list = []
         for item in history:
-            history_data = item.to_dict()
-            # 如果没有HTML版本，就染一个
-            if not history_data.get('answer_html'):
-                history_data['answer_html'] = render_markdown(item.answer)
-            history_list.append(history_data)
+            try:
+                history_data = item.to_dict()
+                # 如果没有HTML版本，就染一个
+                if not history_data.get('answer_html'):
+                    history_data['answer_html'] = render_markdown(item.answer)
+                history_list.append(history_data)
+            except Exception:
+                app.logger.exception('历史记录序列化失败，跳过 id=%s', getattr(item, 'id', None))
+                continue
         
         return jsonify({
             'success': True,

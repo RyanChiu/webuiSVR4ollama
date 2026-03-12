@@ -180,6 +180,10 @@ class ChatApp {
             }
         } catch (error) {
             console.error('加载用户信息失败:', error);
+            const userNameEl = document.getElementById('userName');
+            const userRoleEl = document.getElementById('userRole');
+            if (userNameEl) userNameEl.textContent = '加载失败';
+            if (userRoleEl) userRoleEl.innerHTML = '<i class="fas fa-exclamation-triangle"></i> 用户信息不可用';
         }
     }
 
@@ -191,12 +195,15 @@ class ChatApp {
             const response = await fetch('/api/models', {
                 headers: { 'Accept': 'application/json' }
             });
-            const contentType = (response.headers.get('content-type') || '').toLowerCase();
-            if (!contentType.includes('application/json')) {
-                const raw = await response.text();
-                throw new Error(`响应不是JSON（status=${response.status}）: ${raw.slice(0, 80)}`);
+
+            const raw = await response.text();
+            let data = {};
+            try {
+                data = raw ? JSON.parse(raw) : {};
+            } catch (parseError) {
+                throw new Error(`响应解析失败（status=${response.status}）: ${raw.slice(0, 80)}`);
             }
-            const data = await response.json();
+
             if (!response.ok) {
                 throw new Error(data.message || `HTTP error! status: ${response.status}`);
             }
