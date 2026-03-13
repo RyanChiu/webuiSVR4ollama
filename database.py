@@ -79,6 +79,7 @@ class ChatHistory(db.Model):
     conversation_id = db.Column(db.String(64), default='', index=True)
     conversation_title = db.Column(db.String(120), default='')
     question = db.Column(db.Text, nullable=False)
+    question_html = db.Column(db.Text, default='')
     answer = db.Column(db.Text, nullable=False)
     answer_html = db.Column(db.Text, default='')
     model = db.Column(db.String(100), default='')
@@ -93,6 +94,7 @@ class ChatHistory(db.Model):
             'conversation_id': self.conversation_id or '',
             'conversation_title': self.conversation_title or '',
             'question': self.question,
+            'question_html': self.question_html or '',
             'answer': self.answer,
             'answer_html': self.answer_html or self.answer,
             'model': self.model,

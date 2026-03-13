@@ -106,26 +106,6 @@ class ChatApp {
         }
     }
 
-    loadMarkedLibrary() {
-        // 不再加载任何外部CDN资源，保持离线可用。
-        return;
-    }
-
-    renderMarkdown(text) {
-        if (!text) return '';
-        
-        if (window.marked) {
-            try {
-                return marked.parse(text);
-            } catch (e) {
-                console.error('Markdown渲染失败:', e);
-            }
-        }
-        
-        // 简单渲染
-        return text.replace(/\n/g, '<br>');
-    }
-
     async loadUserInfo() {
         try {
             const response = await fetch('/api/user/info');
@@ -348,7 +328,11 @@ class ChatApp {
                         messagesContainer.innerHTML = '';
 
                         conversationHistory.forEach(historyItem => {
-                            this.displayMessage('question', historyItem.question || '', false);
+                            if (historyItem.question_html) {
+                                this.displayMessage('question', historyItem.question_html, true);
+                            } else {
+                                this.displayMessage('question', historyItem.question || '', false);
+                            }
                             if (historyItem.answer_html) {
                                 this.displayMessage('answer', historyItem.answer_html, true);
                             } else {
@@ -446,7 +430,7 @@ class ChatApp {
             modelSelect.dataset.selectedModel = model;
         }
         
-        this.displayMessage('question', question, false);
+        const questionMessage = this.displayMessage('question', question, false);
         input.value = '';
         
         this.showThinking();
@@ -468,7 +452,8 @@ class ChatApp {
                     'Accept': 'application/json'
                 }),
                 body: JSON.stringify({ 
-                    question: prompt, 
+                    question: question,
+                    prompt: prompt,
                     model: model,
                     conversation_id: this.currentConversationId || ''
                 })
@@ -483,6 +468,13 @@ class ChatApp {
             this.hideThinking();
             
             if (data.success) {
+                if (questionMessage && data.question_html) {
+                    const questionContentEl = questionMessage.querySelector('.message-content');
+                    if (questionContentEl) {
+                        questionContentEl.innerHTML = data.question_html;
+                        this.addCopyButtons(questionMessage);
+                    }
+                }
                 const safeAnswerHtml = data.answer_html || this.escapeHtml(data.answer || '').replace(/\n/g, '<br>');
                 this.displayMessage('answer', safeAnswerHtml, true);
                 if (data.conversation_id) {
@@ -523,7 +515,7 @@ class ChatApp {
 
     displayMessage(type, content, isHtml = false) {
         const messagesContainer = document.getElementById('messages');
-        if (!messagesContainer) return;
+        if (!messagesContainer) return null;
         
         const message = document.createElement('div');
         message.className = 'message ' + type;
@@ -567,6 +559,8 @@ class ChatApp {
         if (autoScroll && autoScroll.checked) {
             this.scrollToBottom();
         }
+
+        return message;
     }
 
     addCopyButtons(element) {

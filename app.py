@@ -190,6 +190,7 @@ app.config['OLLAMA_BASE_URL'] = os.environ.get('OLLAMA_BASE_URL', 'http://localh
 app.config['DEFAULT_MODEL'] = os.environ.get('DEFAULT_MODEL', '').strip()
 app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH', '1048576'))  # 1MB
 app.config['MAX_QUESTION_CHARS'] = int(os.environ.get('MAX_QUESTION_CHARS', '8000'))
+app.config['MAX_PROMPT_CHARS'] = int(os.environ.get('MAX_PROMPT_CHARS', '32000'))
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = os.environ.get('SESSION_COOKIE_SAMESITE', 'Lax')
 app.config['SESSION_COOKIE_SECURE'] = env_flag('SESSION_COOKIE_SECURE', False)
@@ -439,6 +440,7 @@ def ensure_db_schema_compatibility():
         ensure_column('chat_history', 'created_at', 'created_at DATETIME')
         ensure_column('chat_history', 'conversation_id', "conversation_id VARCHAR(64) DEFAULT ''")
         ensure_column('chat_history', 'conversation_title', "conversation_title VARCHAR(120) DEFAULT ''")
+        ensure_column('chat_history', 'question_html', "question_html TEXT DEFAULT ''")
 
         conn.commit()
     except Exception:
@@ -672,6 +674,7 @@ def chat():
             return jsonify({'success': False, 'message': '无效的请求数据'})
         
         question = data.get('question', '').strip()
+        prompt = (data.get('prompt') or '').strip()
         model = (data.get('model') or app.config['DEFAULT_MODEL']).strip()
         conversation_id = (data.get('conversation_id') or '').strip()
         
@@ -682,6 +685,10 @@ def chat():
         
         if len(question) > app.config['MAX_QUESTION_CHARS']:
             return jsonify({'success': False, 'message': f"问题过长，最多 {app.config['MAX_QUESTION_CHARS']} 字符"})
+        if not prompt:
+            prompt = question
+        if len(prompt) > app.config['MAX_PROMPT_CHARS']:
+            return jsonify({'success': False, 'message': f"请求上下文过长，最多 {app.config['MAX_PROMPT_CHARS']} 字符"})
 
         if conversation_id and (len(conversation_id) > 64 or '/' in conversation_id):
             return jsonify({'success': False, 'message': '会话标识无效'})
@@ -710,7 +717,7 @@ def chat():
         if not conversation_title:
             conversation_title = question[:60]
         
-        result = query_ollama(question, model)
+        result = query_ollama(prompt, model)
         
         if 'error' in result:
             return jsonify({'success': False, 'message': result['error']})
@@ -718,12 +725,14 @@ def chat():
         # 渲染Markdown
         raw_answer = result['response']
         html_answer = render_markdown(raw_answer)
+        html_question = render_markdown(question)
         
         chat = ChatHistory(
             user_id=current_user.id,
             conversation_id=conversation_id,
             conversation_title=conversation_title,
             question=question,
+            question_html=html_question,
             answer=raw_answer,
             answer_html=html_answer,
             model=model,
@@ -734,6 +743,8 @@ def chat():
         
         return jsonify({
             'success': True,
+            'question': question,
+            'question_html': html_question,
             'answer': raw_answer,
             'answer_html': html_answer,
             'history_id': chat.id,
@@ -802,6 +813,11 @@ def get_history():
                 try:
                     history_data = item.to_dict()
                     # 如果没有HTML版本，就染一个
+                    if not history_data.get('question_html'):
+                        rendered = render_markdown(item.question)
+                        history_data['question_html'] = rendered
+                        item.question_html = rendered
+                        pending_render_updates = True
                     if not history_data.get('answer_html'):
                         rendered = render_markdown(item.answer)
                         history_data['answer_html'] = rendered
@@ -834,10 +850,18 @@ def delete_history(history_id):
 
         if request.method == 'GET':
             history_data = chat.to_dict()
+            pending_render_updates = False
+            if not history_data.get('question_html'):
+                rendered = render_markdown(chat.question)
+                history_data['question_html'] = rendered
+                chat.question_html = rendered
+                pending_render_updates = True
             if not history_data.get('answer_html'):
                 rendered = render_markdown(chat.answer)
                 history_data['answer_html'] = rendered
                 chat.answer_html = rendered
+                pending_render_updates = True
+            if pending_render_updates:
                 db.session.commit()
             history_data['conversation_id'] = (chat.conversation_id or '').strip() or f"legacy-{chat.id}"
             history_data['conversation_title'] = (chat.conversation_title or '').strip() or (chat.question or '')[:60]
@@ -886,6 +910,11 @@ def conversation_detail(conversation_id):
         effective_title = ''
         for chat in chats:
             data = chat.to_dict()
+            if not data.get('question_html'):
+                rendered = render_markdown(chat.question)
+                data['question_html'] = rendered
+                chat.question_html = rendered
+                pending_render_updates = True
             if not data.get('answer_html'):
                 rendered = render_markdown(chat.answer)
                 data['answer_html'] = rendered
