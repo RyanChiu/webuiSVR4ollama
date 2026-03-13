@@ -431,6 +431,13 @@ class ChatApp {
         }
         
         const questionMessage = this.displayMessage('question', question, false);
+        if (questionMessage) {
+            const questionContentEl = questionMessage.querySelector('.message-content');
+            if (questionContentEl) {
+                questionContentEl.innerHTML = this.renderImmediateMarkdown(question);
+                this.addCopyButtons(questionMessage);
+            }
+        }
         input.value = '';
         
         this.showThinking();
@@ -511,6 +518,118 @@ class ChatApp {
             
             this.showToast('发送失败: ' + error.message, 'error');
         }
+    }
+
+    renderImmediateMarkdown(text) {
+        const source = (text || '').trim();
+        if (!source) return '';
+
+        const lines = source.split('\n');
+        const blocks = [];
+        let index = 0;
+
+        const isSpecialStart = (line) => {
+            const v = line || '';
+            return (
+                /^```/.test(v) ||
+                /^\s*[-*]\s+/.test(v) ||
+                /^\s*\d+\.\s+/.test(v) ||
+                /^\s*#{1,6}\s+/.test(v) ||
+                /^\s*>\s?/.test(v) ||
+                /^\s*([-*_])\1{2,}\s*$/.test(v)
+            );
+        };
+
+        while (index < lines.length) {
+            const line = lines[index] || '';
+
+            if (/^```/.test(line)) {
+                const lang = (line.slice(3).trim() || '').replace(/[^\w-]/g, '');
+                const codeLines = [];
+                index += 1;
+                while (index < lines.length && !/^```/.test(lines[index])) {
+                    codeLines.push(lines[index]);
+                    index += 1;
+                }
+                if (index < lines.length && /^```/.test(lines[index])) {
+                    index += 1;
+                }
+                const codeClass = lang ? ` class="language-${lang}"` : '';
+                blocks.push(`<pre><code${codeClass}>${this.escapeHtml(codeLines.join('\n'))}</code></pre>`);
+                continue;
+            }
+
+            if (/^\s*[-*]\s+/.test(line)) {
+                const items = [];
+                while (index < lines.length && /^\s*[-*]\s+/.test(lines[index])) {
+                    items.push(lines[index].replace(/^\s*[-*]\s+/, ''));
+                    index += 1;
+                }
+                blocks.push(`<ul>${items.map(item => `<li>${this.formatInlineMarkdown(item)}</li>`).join('')}</ul>`);
+                continue;
+            }
+
+            if (/^\s*\d+\.\s+/.test(line)) {
+                const items = [];
+                while (index < lines.length && /^\s*\d+\.\s+/.test(lines[index])) {
+                    items.push(lines[index].replace(/^\s*\d+\.\s+/, ''));
+                    index += 1;
+                }
+                blocks.push(`<ol>${items.map(item => `<li>${this.formatInlineMarkdown(item)}</li>`).join('')}</ol>`);
+                continue;
+            }
+
+            const headingMatch = line.match(/^\s*(#{1,6})\s+(.*)$/);
+            if (headingMatch) {
+                const level = headingMatch[1].length;
+                blocks.push(`<h${level}>${this.formatInlineMarkdown(headingMatch[2])}</h${level}>`);
+                index += 1;
+                continue;
+            }
+
+            if (/^\s*>\s?/.test(line)) {
+                const quoteLines = [];
+                while (index < lines.length && /^\s*>\s?/.test(lines[index])) {
+                    quoteLines.push(lines[index].replace(/^\s*>\s?/, ''));
+                    index += 1;
+                }
+                blocks.push(`<blockquote>${quoteLines.map(item => this.formatInlineMarkdown(item)).join('<br>')}</blockquote>`);
+                continue;
+            }
+
+            if (/^\s*([-*_])\1{2,}\s*$/.test(line)) {
+                blocks.push('<hr>');
+                index += 1;
+                continue;
+            }
+
+            if (!line.trim()) {
+                index += 1;
+                continue;
+            }
+
+            const paragraph = [line];
+            index += 1;
+            while (index < lines.length && lines[index].trim() && !isSpecialStart(lines[index])) {
+                paragraph.push(lines[index]);
+                index += 1;
+            }
+            blocks.push(`<p>${paragraph.map(item => this.formatInlineMarkdown(item)).join('<br>')}</p>`);
+        }
+
+        return blocks.join('');
+    }
+
+    formatInlineMarkdown(text) {
+        let html = this.escapeHtml(text || '');
+        html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+        html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+        html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+        html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+        html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+        html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
+        html = html.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+        return html;
     }
 
     displayMessage(type, content, isHtml = false) {
