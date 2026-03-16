@@ -44,6 +44,7 @@ class User(db.Model, UserMixin):
     # 关联关系
     chats = db.relationship('ChatHistory', backref='user', lazy='dynamic', cascade='all, delete-orphan')
     attachments = db.relationship('Attachment', backref='user', lazy='dynamic', cascade='all, delete-orphan')
+    rules = db.relationship('RuleDocument', backref='user', lazy='dynamic', cascade='all, delete-orphan')
     
     def set_password(self, password):
         """设置密码哈希"""
@@ -144,3 +145,44 @@ class Attachment(db.Model):
 
     def __repr__(self):
         return f'<Attachment {self.id} - User {self.user_id}>'
+
+
+class RuleDocument(db.Model):
+    """规则文档模型"""
+    __tablename__ = 'rule_documents'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    rule_group_id = db.Column(db.String(32), nullable=False, index=True)
+    version = db.Column(db.Integer, default=1)
+    name = db.Column(db.String(255), nullable=False)
+    extension = db.Column(db.String(16), default='')
+    content_text = db.Column(db.Text, default='')
+    status = db.Column(db.String(32), default='draft', index=True)
+    is_current = db.Column(db.Boolean, default=True, index=True)
+    is_active = db.Column(db.Boolean, default=False, index=True)
+    ai_review_passed = db.Column(db.Boolean, default=False)
+    ai_review_summary = db.Column(db.Text, default='')
+    ai_review_raw = db.Column(db.Text, default='')
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'rule_group_id': self.rule_group_id,
+            'version': self.version or 1,
+            'name': self.name,
+            'extension': self.extension or '',
+            'status': self.status or 'draft',
+            'is_current': bool(self.is_current),
+            'is_active': bool(self.is_active),
+            'ai_review_passed': bool(self.ai_review_passed),
+            'ai_review_summary': self.ai_review_summary or '',
+            'content_preview': (self.content_text or '')[:240],
+            'created_at': format_datetime_value(self.created_at),
+            'updated_at': format_datetime_value(self.updated_at)
+        }
+
+    def __repr__(self):
+        return f'<RuleDocument {self.id} - User {self.user_id} - v{self.version}>'

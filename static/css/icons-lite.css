@@ -42,6 +42,8 @@
 .fa-paper-plane::before { content: "\27A4"; }
 .fa-paperclip::before { content: "\1F4CE"; }
 .fa-download::before { content: "\2B07"; }
+.fa-file-alt::before { content: "\1F4C4"; }
+.fa-check-circle::before { content: "\2705"; }
 .fa-arrow-down::before { content: "\2193"; }
 .fa-eraser::before { content: "\232B"; }
 .fa-save::before { content: "\1F4BE"; }

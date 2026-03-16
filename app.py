@@ -23,7 +23,7 @@ from markdown.extensions.tables import TableExtension
 from markdown.extensions.toc import TocExtension
 
 # 导入数据库模型
-from database import db, User, ChatHistory, Attachment, format_datetime_value
+from database import db, User, ChatHistory, Attachment, RuleDocument, format_datetime_value
 
 # 初始化 Flask
 app = Flask(__name__)
@@ -198,6 +198,9 @@ app.config['MAX_ATTACHMENT_SIZE_BYTES'] = int(os.environ.get('MAX_ATTACHMENT_SIZ
 app.config['MAX_ATTACHMENTS_PER_REQUEST'] = int(os.environ.get('MAX_ATTACHMENTS_PER_REQUEST', '5'))
 app.config['MAX_ATTACHMENTS_PER_MESSAGE'] = int(os.environ.get('MAX_ATTACHMENTS_PER_MESSAGE', '5'))
 app.config['MAX_ATTACHMENT_TEXT_CHARS'] = int(os.environ.get('MAX_ATTACHMENT_TEXT_CHARS', '12000'))
+app.config['MAX_RULE_FILE_SIZE_BYTES'] = int(os.environ.get('MAX_RULE_FILE_SIZE_BYTES', '10485760'))  # 10MB
+app.config['MAX_RULE_FILES_PER_REQUEST'] = int(os.environ.get('MAX_RULE_FILES_PER_REQUEST', '3'))
+app.config['MAX_RULE_TEXT_CHARS'] = int(os.environ.get('MAX_RULE_TEXT_CHARS', '20000'))
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = os.environ.get('SESSION_COOKIE_SAMESITE', 'Lax')
 app.config['SESSION_COOKIE_SECURE'] = env_flag('SESSION_COOKIE_SECURE', False)
@@ -323,6 +326,10 @@ def safe_requests_post(url, payload, timeout):
 
 
 ALLOWED_ATTACHMENT_EXTENSIONS = {
+    'pdf', 'txt', 'md',
+    'docx', 'xlsx', 'pptx'
+}
+ALLOWED_RULE_EXTENSIONS = {
     'pdf', 'txt', 'md',
     'docx', 'xlsx', 'pptx'
 }
@@ -487,6 +494,78 @@ def serialize_download_response(content, format_type, filename):
     return response
 
 
+def extract_json_object(text):
+    if not text:
+        return None
+    start = text.find('{')
+    end = text.rfind('}')
+    if start < 0 or end <= start:
+        return None
+    candidate = text[start:end + 1]
+    try:
+        return json.loads(candidate)
+    except Exception:
+        return None
+
+
+def build_rule_review_prompt(rule_name, rule_text):
+    snippet = (rule_text or '')[:app.config['MAX_RULE_TEXT_CHARS']]
+    return (
+        "你是规则文件审查助手。请检查规则是否自相矛盾、歧义、不可执行、"
+        "缺少关键边界条件、存在安全/合规风险。\n"
+        "必须只输出 JSON，不要输出任何额外解释。\n"
+        "JSON结构如下：\n"
+        "{\n"
+        '  "pass": true/false,\n'
+        '  "summary": "一句话总结",\n'
+        '  "issues": [\n'
+        '    {"severity":"high|medium|low","title":"问题标题","detail":"问题说明"}\n'
+        "  ],\n"
+        '  "revision_suggestion": "建议修改后的规则文本（可选）"\n'
+        "}\n\n"
+        f"规则文件名: {rule_name}\n"
+        "规则正文如下：\n"
+        f"{snippet}"
+    )
+
+
+def normalize_rule_review_result(raw_text):
+    payload = extract_json_object(raw_text or '')
+    if not isinstance(payload, dict):
+        return {
+            'pass': False,
+            'summary': 'AI 返回格式不符合预期，请手工检查',
+            'issues': [{'severity': 'medium', 'title': '输出格式错误', 'detail': (raw_text or '')[:300]}],
+            'revision_suggestion': ''
+        }
+
+    issues = payload.get('issues')
+    normalized_issues = []
+    if isinstance(issues, list):
+        for item in issues[:20]:
+            if not isinstance(item, dict):
+                continue
+            severity = (item.get('severity') or 'medium').strip().lower()
+            if severity not in {'high', 'medium', 'low'}:
+                severity = 'medium'
+            normalized_issues.append({
+                'severity': severity,
+                'title': str(item.get('title') or '未命名问题')[:80],
+                'detail': str(item.get('detail') or '')[:600]
+            })
+
+    summary = str(payload.get('summary') or '').strip()
+    if not summary:
+        summary = '未提供总结'
+
+    return {
+        'pass': bool(payload.get('pass')),
+        'summary': summary[:300],
+        'issues': normalized_issues,
+        'revision_suggestion': str(payload.get('revision_suggestion') or '')[:4000]
+    }
+
+
 @app.before_request
 def csrf_protect():
     if request.method not in {'POST', 'PUT', 'PATCH', 'DELETE'}:
@@ -617,6 +696,20 @@ def ensure_db_schema_compatibility():
         ensure_column('chat_history', 'conversation_title', "conversation_title VARCHAR(120) DEFAULT ''")
         ensure_column('chat_history', 'question_html', "question_html TEXT DEFAULT ''")
         ensure_column('chat_history', 'attachment_ids', "attachment_ids TEXT DEFAULT '[]'")
+
+        ensure_column('rule_documents', 'rule_group_id', "rule_group_id VARCHAR(32) DEFAULT ''")
+        ensure_column('rule_documents', 'version', 'version INTEGER DEFAULT 1')
+        ensure_column('rule_documents', 'name', "name VARCHAR(255) DEFAULT ''")
+        ensure_column('rule_documents', 'extension', "extension VARCHAR(16) DEFAULT ''")
+        ensure_column('rule_documents', 'content_text', "content_text TEXT DEFAULT ''")
+        ensure_column('rule_documents', 'status', "status VARCHAR(32) DEFAULT 'draft'")
+        ensure_column('rule_documents', 'is_current', 'is_current BOOLEAN DEFAULT 1')
+        ensure_column('rule_documents', 'is_active', 'is_active BOOLEAN DEFAULT 0')
+        ensure_column('rule_documents', 'ai_review_passed', 'ai_review_passed BOOLEAN DEFAULT 0')
+        ensure_column('rule_documents', 'ai_review_summary', "ai_review_summary TEXT DEFAULT ''")
+        ensure_column('rule_documents', 'ai_review_raw', "ai_review_raw TEXT DEFAULT ''")
+        ensure_column('rule_documents', 'created_at', 'created_at DATETIME')
+        ensure_column('rule_documents', 'updated_at', 'updated_at DATETIME')
 
         conn.commit()
     except Exception:
@@ -831,6 +924,244 @@ def user_info():
         'success': True,
         'user': user_payload
     })
+
+
+@app.route('/api/rules', methods=['GET'])
+@login_required
+def list_rules():
+    try:
+        include_history = request.args.get('history', '0').strip() in {'1', 'true', 'yes'}
+        query = RuleDocument.query.filter_by(user_id=current_user.id)
+        if not include_history:
+            query = query.filter_by(is_current=True)
+        rules = query.order_by(RuleDocument.is_active.desc(), RuleDocument.updated_at.desc(), RuleDocument.id.desc()).all()
+        return jsonify({
+            'success': True,
+            'rules': [item.to_dict() for item in rules]
+        })
+    except Exception:
+        app.logger.exception('加载规则列表异常')
+        return jsonify({'success': False, 'message': '加载规则失败'}), 500
+
+
+@app.route('/api/rules/upload', methods=['POST'])
+@login_required
+def upload_rules():
+    try:
+        limit_response = enforce_rate_limit(
+            'rules_upload',
+            f"{current_user.id}:{get_client_ip()}",
+            limit=12,
+            window_seconds=60
+        )
+        if limit_response:
+            return limit_response
+
+        replace_rule_id = request.form.get('replace_rule_id', '').strip()
+        files = request.files.getlist('files')
+        if not files:
+            one = request.files.get('file')
+            if one:
+                files = [one]
+        if not files:
+            return jsonify({'success': False, 'message': '未检测到规则文件'}), 400
+
+        if replace_rule_id and len(files) != 1:
+            return jsonify({'success': False, 'message': '修订上传只能上传单个文件'}), 400
+
+        if len(files) > app.config['MAX_RULE_FILES_PER_REQUEST']:
+            return jsonify({'success': False, 'message': f"单次最多上传 {app.config['MAX_RULE_FILES_PER_REQUEST']} 个规则文件"}), 400
+
+        replace_rule = None
+        if replace_rule_id:
+            try:
+                replace_rule = RuleDocument.query.filter_by(
+                    id=int(replace_rule_id),
+                    user_id=current_user.id,
+                    is_current=True
+                ).first()
+            except ValueError:
+                replace_rule = None
+            if not replace_rule:
+                return jsonify({'success': False, 'message': '待修订规则不存在'}), 404
+
+        created = []
+        errors = []
+        max_size = max(1024, app.config['MAX_RULE_FILE_SIZE_BYTES'])
+        max_text_len = max(2000, app.config['MAX_RULE_TEXT_CHARS'])
+
+        for file in files:
+            raw_name = (file.filename or '').strip()
+            if not raw_name:
+                errors.append({'name': 'unknown', 'error': '文件名为空'})
+                continue
+
+            ext = normalize_extension(raw_name)
+            if ext not in ALLOWED_RULE_EXTENSIONS:
+                errors.append({'name': raw_name, 'error': f'不支持的规则文件类型: .{ext or "unknown"}'})
+                continue
+
+            file_bytes = file.read(max_size + 1)
+            if len(file_bytes) > max_size:
+                errors.append({'name': raw_name, 'error': f'规则文件过大，单文件最大 {max_size // (1024 * 1024)}MB'})
+                continue
+            if not file_bytes:
+                errors.append({'name': raw_name, 'error': '空文件不允许上传'})
+                continue
+            if not is_attachment_signature_valid(ext, file_bytes):
+                errors.append({'name': raw_name, 'error': '文件签名校验失败'})
+                continue
+
+            extracted_text, parse_error = extract_attachment_text(ext, file_bytes)
+            extracted_text = (extracted_text or '').strip()
+            if parse_error:
+                errors.append({'name': raw_name, 'error': f'解析失败: {parse_error}'})
+                continue
+            if not extracted_text:
+                errors.append({'name': raw_name, 'error': '未提取到可用文本'})
+                continue
+            if len(extracted_text) > max_text_len:
+                extracted_text = extracted_text[:max_text_len] + '\n...(内容已截断)'
+
+            clean_name = raw_name.replace('\x00', '').replace('\r', ' ').replace('\n', ' ').strip()[:255]
+            if not clean_name:
+                clean_name = f'rule.{ext}'
+
+            if replace_rule:
+                group_id = replace_rule.rule_group_id
+                latest = (
+                    RuleDocument.query
+                    .filter_by(user_id=current_user.id, rule_group_id=group_id)
+                    .order_by(RuleDocument.version.desc())
+                    .first()
+                )
+                next_version = (latest.version + 1) if latest else (replace_rule.version + 1)
+                RuleDocument.query.filter_by(user_id=current_user.id, rule_group_id=group_id, is_current=True).update({
+                    'is_current': False,
+                    'is_active': False
+                })
+            else:
+                group_id = secrets.token_hex(8)
+                next_version = 1
+
+            item = RuleDocument(
+                user_id=current_user.id,
+                rule_group_id=group_id,
+                version=next_version,
+                name=clean_name,
+                extension=ext,
+                content_text=extracted_text,
+                status='draft',
+                is_current=True,
+                is_active=False,
+                ai_review_passed=False,
+                ai_review_summary='',
+                ai_review_raw=''
+            )
+            db.session.add(item)
+            db.session.flush()
+            created.append(item.to_dict())
+
+        db.session.commit()
+        if not created:
+            return jsonify({'success': False, 'message': '上传失败', 'errors': errors}), 400
+
+        return jsonify({
+            'success': True,
+            'rules': created,
+            'errors': errors
+        })
+    except Exception:
+        app.logger.exception('上传规则文件异常')
+        return jsonify({'success': False, 'message': '上传规则失败'}), 500
+
+
+@app.route('/api/rules/<int:rule_id>/ai-review', methods=['POST'])
+@login_required
+def ai_review_rule(rule_id):
+    try:
+        limit_response = enforce_rate_limit(
+            'rules_review',
+            f"{current_user.id}:{get_client_ip()}",
+            limit=20,
+            window_seconds=60
+        )
+        if limit_response:
+            return limit_response
+
+        rule = RuleDocument.query.filter_by(id=rule_id, user_id=current_user.id, is_current=True).first()
+        if not rule:
+            return jsonify({'success': False, 'message': '规则不存在'}), 404
+
+        data = request.get_json(silent=True) or {}
+        model = (data.get('model') or app.config['DEFAULT_MODEL']).strip()
+        if not model:
+            return jsonify({'success': False, 'message': '未设置模型，请先选择模型'}), 400
+
+        review_prompt = build_rule_review_prompt(rule.name, rule.content_text)
+        result = query_ollama(review_prompt, model)
+        if 'error' in result:
+            return jsonify({'success': False, 'message': result['error']}), 500
+
+        raw = result.get('response', '')
+        normalized = normalize_rule_review_result(raw)
+        rule.ai_review_passed = bool(normalized['pass'])
+        rule.ai_review_summary = normalized['summary']
+        rule.ai_review_raw = raw[:12000]
+        rule.status = 'ai_review_passed' if rule.ai_review_passed else 'ai_review_failed'
+        if not rule.ai_review_passed:
+            rule.is_active = False
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+            'rule': rule.to_dict(),
+            'review': normalized
+        })
+    except Exception:
+        app.logger.exception('AI审查规则异常')
+        return jsonify({'success': False, 'message': 'AI审查失败'}), 500
+
+
+@app.route('/api/rules/<int:rule_id>/confirm', methods=['POST'])
+@login_required
+def confirm_rule(rule_id):
+    try:
+        rule = RuleDocument.query.filter_by(id=rule_id, user_id=current_user.id, is_current=True).first()
+        if not rule:
+            return jsonify({'success': False, 'message': '规则不存在'}), 404
+        if not rule.ai_review_passed or rule.status != 'ai_review_passed':
+            return jsonify({'success': False, 'message': '规则尚未通过AI审查，无法确认'}), 400
+
+        rule.status = 'confirmed'
+        db.session.commit()
+        return jsonify({'success': True, 'rule': rule.to_dict()})
+    except Exception:
+        app.logger.exception('确认规则异常')
+        return jsonify({'success': False, 'message': '确认失败'}), 500
+
+
+@app.route('/api/rules/<int:rule_id>/active', methods=['POST'])
+@login_required
+def toggle_rule_active(rule_id):
+    try:
+        rule = RuleDocument.query.filter_by(id=rule_id, user_id=current_user.id, is_current=True).first()
+        if not rule:
+            return jsonify({'success': False, 'message': '规则不存在'}), 404
+        if rule.status != 'confirmed':
+            return jsonify({'success': False, 'message': '只有已确认规则才能启用'}), 400
+
+        data = request.get_json(silent=True) or {}
+        active = data.get('active')
+        if active is None:
+            active = not bool(rule.is_active)
+        active = bool(active)
+        rule.is_active = active
+        db.session.commit()
+        return jsonify({'success': True, 'rule': rule.to_dict()})
+    except Exception:
+        app.logger.exception('启停规则异常')
+        return jsonify({'success': False, 'message': '启停失败'}), 500
 
 
 @app.route('/api/attachments', methods=['POST'])
