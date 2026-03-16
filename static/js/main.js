@@ -730,12 +730,8 @@ class ChatApp {
                             } else {
                                 this.displayMessage('question', historyItem.question || '', false);
                             }
-                            if (historyItem.answer_html) {
-                                this.displayMessage('answer', historyItem.answer_html, true, { historyId: historyItem.id });
-                            } else {
-                                const safeHtml = this.escapeHtml(historyItem.answer || '').replace(/\n/g, '<br>');
-                                this.displayMessage('answer', safeHtml, true, { historyId: historyItem.id });
-                            }
+                            const safeHtml = this.normalizeAnswerHtml(historyItem.answer_html, historyItem.answer);
+                            this.displayMessage('answer', safeHtml, true, { historyId: historyItem.id });
                             this.currentHistory.push(
                                 { type: 'question', content: historyItem.question || '' },
                                 { type: 'answer', content: historyItem.answer || '' }
@@ -811,6 +807,7 @@ class ChatApp {
         if (!input) return;
         
         const question = input.value.trim();
+        const originalQuestion = question;
         
         if (!question) {
             this.showToast('请输入问题', 'warning');
@@ -884,7 +881,7 @@ class ChatApp {
                         this.addCopyButtons(questionMessage);
                     }
                 }
-                const safeAnswerHtml = data.answer_html || this.escapeHtml(data.answer || '').replace(/\n/g, '<br>');
+                const safeAnswerHtml = this.normalizeAnswerHtml(data.answer_html, data.answer);
                 this.displayMessage('answer', safeAnswerHtml, true, { historyId: data.history_id });
                 if (data.conversation_id) {
                     this.currentConversationId = String(data.conversation_id);
@@ -911,12 +908,21 @@ class ChatApp {
             this.hideThinking();
             console.error('发送消息失败:', error);
             
-            const messages = document.getElementById('messages');
-            if (messages) {
-                const lastMessage = messages.lastElementChild;
-                if (lastMessage && lastMessage.classList.contains('question')) {
-                    messages.removeChild(lastMessage);
+            if (questionMessage && questionMessage.parentNode) {
+                questionMessage.parentNode.removeChild(questionMessage);
+            } else {
+                const messages = document.getElementById('messages');
+                if (messages) {
+                    const lastMessage = messages.lastElementChild;
+                    if (lastMessage && lastMessage.classList.contains('question')) {
+                        messages.removeChild(lastMessage);
+                    }
                 }
+            }
+
+            if (input && !input.value.trim()) {
+                input.value = originalQuestion;
+                input.focus();
             }
             
             this.showToast('发送失败: ' + error.message, 'error');
@@ -1033,6 +1039,33 @@ class ChatApp {
         html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
         html = html.replace(/~~([^~]+)~~/g, '<del>$1</del>');
         return html;
+    }
+
+    normalizeAnswerHtml(answerHtml, rawAnswer) {
+        const raw = String(rawAnswer || '');
+        const html = String(answerHtml || '');
+        if (!html) {
+            return this.escapeHtml(raw).replace(/\n/g, '<br>');
+        }
+
+        try {
+            const probe = document.createElement('div');
+            probe.innerHTML = html;
+            const renderedText = (probe.textContent || '').trim();
+            const rawText = raw.trim();
+            if (!rawText) {
+                return html;
+            }
+
+            // 若渲染后的纯文本明显短于原始答案，回退为纯文本展示，避免“显示不完整”。
+            if (!renderedText || renderedText.length < Math.floor(rawText.length * 0.55)) {
+                return this.escapeHtml(raw).replace(/\n/g, '<br>');
+            }
+            return html;
+        } catch (e) {
+            console.error('答案HTML完整性检查失败，回退纯文本:', e);
+            return this.escapeHtml(raw).replace(/\n/g, '<br>');
+        }
     }
 
     displayMessage(type, content, isHtml = false, options = {}) {
