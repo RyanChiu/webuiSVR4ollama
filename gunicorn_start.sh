@@ -5,6 +5,14 @@ set -e
 
 echo "🚀 启动 Ollama WebUI..."
 
+# macOS fork 安全兼容（优先在 shell 层注入，避免 Gunicorn 子进程初始化时机问题）
+if [ "$(uname -s)" = "Darwin" ]; then
+    export OBJC_DISABLE_INITIALIZE_FORK_SAFETY="${OBJC_DISABLE_INITIALIZE_FORK_SAFETY:-YES}"
+    export GUNICORN_WORKERS="${GUNICORN_WORKERS:-1}"
+    export GUNICORN_WORKER_CLASS="${GUNICORN_WORKER_CLASS:-gthread}"
+    export GUNICORN_THREADS="${GUNICORN_THREADS:-4}"
+fi
+
 # 检查Ollama服务
 echo "📡 检查Ollama服务..."
 if curl -s http://localhost:11434/api/tags > /dev/null; then

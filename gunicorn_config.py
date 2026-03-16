@@ -7,12 +7,16 @@ import platform
 bind = "0.0.0.0:5001"
 
 is_darwin = platform.system() == "Darwin"
+if is_darwin:
+    # 必须在 master 进程启动早期就设置，降低 macOS Objective-C fork 崩溃概率
+    os.environ.setdefault("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
 
 # 工作进程与模式
 # macOS 下默认使用更稳的线程模型，避免 Objective-C fork 崩溃。
 if is_darwin:
-    workers = int(os.environ.get("GUNICORN_WORKERS", "1"))
-    worker_class = os.environ.get("GUNICORN_WORKER_CLASS", "gthread")
+    # Darwin 下强制单 worker，避免环境变量误配触发多进程 fork 崩溃
+    workers = 1
+    worker_class = "gthread"
     threads = int(os.environ.get("GUNICORN_THREADS", "4"))
 else:
     workers = int(os.environ.get("GUNICORN_WORKERS", str(multiprocessing.cpu_count() * 2 + 1)))
