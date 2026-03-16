@@ -3,6 +3,8 @@ class ChatApp {
         this.currentConversationId = null;
         this.currentHistory = [];
         this.allHistory = [];
+        this.pendingAttachments = [];
+        this.isUploadingAttachments = false;
         this.searchTerm = '';
         this.isThinking = false;
         this.csrfToken = this.getCsrfToken();
@@ -24,6 +26,7 @@ class ChatApp {
 
     init() {
         this.bindEvents();
+        this.renderPendingAttachments();
         this.loadModels();
         this.loadHistory();
         this.loadUserInfo();
@@ -71,6 +74,21 @@ class ChatApp {
         const clearChatBtn = document.getElementById('clearChat');
         if (clearChatBtn) {
             clearChatBtn.addEventListener('click', () => this.startNewConversation());
+        }
+
+        const attachBtn = document.getElementById('attachBtn');
+        if (attachBtn) {
+            attachBtn.addEventListener('click', () => this.openAttachmentPicker());
+        }
+
+        const attachmentInput = document.getElementById('attachmentInput');
+        if (attachmentInput) {
+            attachmentInput.addEventListener('change', (e) => this.uploadSelectedAttachments(e));
+        }
+
+        const exportConversationBtn = document.getElementById('exportConversation');
+        if (exportConversationBtn) {
+            exportConversationBtn.addEventListener('click', () => this.exportCurrentConversation());
         }
 
         const logoutBtn = document.getElementById('logoutBtn');
@@ -200,6 +218,137 @@ class ChatApp {
             console.error('加载模型失败:', error);
             select.innerHTML = '<option value="" selected disabled>无法获取模型列表</option>';
         }
+    }
+
+    openAttachmentPicker() {
+        const input = document.getElementById('attachmentInput');
+        if (input) {
+            input.click();
+        }
+    }
+
+    formatFileSize(sizeBytes) {
+        const size = Number(sizeBytes || 0);
+        if (size < 1024) return `${size}B`;
+        if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)}KB`;
+        return `${(size / (1024 * 1024)).toFixed(1)}MB`;
+    }
+
+    renderPendingAttachments() {
+        const list = document.getElementById('attachmentList');
+        if (!list) return;
+
+        if (!this.pendingAttachments || this.pendingAttachments.length === 0) {
+            list.innerHTML = '';
+            return;
+        }
+
+        let html = '';
+        this.pendingAttachments.forEach((item) => {
+            const encodedId = encodeURIComponent(String(item.id || ''));
+            const name = item.original_name || 'unnamed';
+            html += `
+                <div class="attachment-item">
+                    <i class="fas fa-paperclip"></i>
+                    <span class="name" title="${this.escapeHtml(name)}">${this.escapeHtml(name)}</span>
+                    <span>${this.formatFileSize(item.size_bytes || 0)}</span>
+                    <button class="remove" onclick="app.removePendingAttachment('${encodedId}', event)">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            `;
+        });
+        list.innerHTML = html;
+    }
+
+    removePendingAttachment(encodedId, event) {
+        if (event) event.stopPropagation();
+        const id = decodeURIComponent(encodedId || '');
+        this.pendingAttachments = this.pendingAttachments.filter(item => String(item.id) !== String(id));
+        this.renderPendingAttachments();
+    }
+
+    clearPendingAttachments() {
+        this.pendingAttachments = [];
+        this.renderPendingAttachments();
+        const input = document.getElementById('attachmentInput');
+        if (input) {
+            input.value = '';
+        }
+    }
+
+    async uploadSelectedAttachments(event) {
+        const input = event && event.target ? event.target : document.getElementById('attachmentInput');
+        if (!input || !input.files || input.files.length === 0) return;
+        if (this.isUploadingAttachments) {
+            this.showToast('附件上传中，请稍候', 'info');
+            return;
+        }
+
+        const files = Array.from(input.files);
+        const formData = new FormData();
+        files.forEach(file => formData.append('files', file));
+
+        this.isUploadingAttachments = true;
+        try {
+            const response = await fetch('/api/attachments', {
+                method: 'POST',
+                headers: this.withCsrfHeaders({}),
+                body: formData
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                throw new Error((data && data.message) || `HTTP error! status: ${response.status}`);
+            }
+
+            const attachments = Array.isArray(data.attachments) ? data.attachments : [];
+            attachments.forEach(item => {
+                if (!this.pendingAttachments.some(existing => String(existing.id) === String(item.id))) {
+                    this.pendingAttachments.push(item);
+                }
+            });
+            this.renderPendingAttachments();
+
+            const failed = Array.isArray(data.errors) ? data.errors : [];
+            if (failed.length > 0) {
+                this.showToast(`部分上传失败（${failed.length}个）`, 'warning');
+            } else {
+                this.showToast(`上传成功（${attachments.length}个）`, 'success');
+            }
+        } catch (error) {
+            console.error('上传附件失败:', error);
+            this.showToast('上传失败: ' + error.message, 'error');
+        } finally {
+            this.isUploadingAttachments = false;
+            input.value = '';
+        }
+    }
+
+    downloadMessage(historyId, format = 'md', event) {
+        if (event) event.preventDefault();
+        const id = String(historyId || '').trim();
+        if (!id) return;
+        const safeFormat = ['md', 'txt', 'json'].includes(format) ? format : 'md';
+        const link = document.createElement('a');
+        link.href = `/api/messages/${encodeURIComponent(id)}/download?format=${safeFormat}`;
+        link.target = '_blank';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+    }
+
+    exportCurrentConversation(format = 'md') {
+        if (!this.currentConversationId) {
+            this.showToast('请先打开一个会话再导出', 'warning');
+            return;
+        }
+        const safeFormat = ['md', 'txt', 'json'].includes(format) ? format : 'md';
+        const link = document.createElement('a');
+        link.href = `/api/conversations/${encodeURIComponent(this.currentConversationId)}/export?format=${safeFormat}`;
+        link.target = '_blank';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
     }
 
     async loadHistory() {
@@ -334,10 +483,10 @@ class ChatApp {
                                 this.displayMessage('question', historyItem.question || '', false);
                             }
                             if (historyItem.answer_html) {
-                                this.displayMessage('answer', historyItem.answer_html, true);
+                                this.displayMessage('answer', historyItem.answer_html, true, { historyId: historyItem.id });
                             } else {
                                 const safeHtml = this.escapeHtml(historyItem.answer || '').replace(/\n/g, '<br>');
-                                this.displayMessage('answer', safeHtml, true);
+                                this.displayMessage('answer', safeHtml, true, { historyId: historyItem.id });
                             }
                             this.currentHistory.push(
                                 { type: 'question', content: historyItem.question || '' },
@@ -419,6 +568,10 @@ class ChatApp {
             this.showToast('请输入问题', 'warning');
             return;
         }
+        if (this.isUploadingAttachments) {
+            this.showToast('附件仍在上传，请稍候', 'warning');
+            return;
+        }
 
         const modelSelect = document.getElementById('modelSelect');
         const model = modelSelect ? (modelSelect.value || '').trim() : '';
@@ -462,7 +615,8 @@ class ChatApp {
                     question: question,
                     prompt: prompt,
                     model: model,
-                    conversation_id: this.currentConversationId || ''
+                    conversation_id: this.currentConversationId || '',
+                    attachment_ids: this.pendingAttachments.map(item => item.id)
                 })
             });
             
@@ -483,7 +637,7 @@ class ChatApp {
                     }
                 }
                 const safeAnswerHtml = data.answer_html || this.escapeHtml(data.answer || '').replace(/\n/g, '<br>');
-                this.displayMessage('answer', safeAnswerHtml, true);
+                this.displayMessage('answer', safeAnswerHtml, true, { historyId: data.history_id });
                 if (data.conversation_id) {
                     this.currentConversationId = String(data.conversation_id);
                 }
@@ -494,6 +648,7 @@ class ChatApp {
                 );
                 
                 await this.loadHistory();
+                this.clearPendingAttachments();
                 
                 this.updateStats({ 
                     tokens_used: data.tokens_used || 0,
@@ -632,7 +787,7 @@ class ChatApp {
         return html;
     }
 
-    displayMessage(type, content, isHtml = false) {
+    displayMessage(type, content, isHtml = false, options = {}) {
         const messagesContainer = document.getElementById('messages');
         if (!messagesContainer) return null;
         
@@ -660,6 +815,18 @@ class ChatApp {
             formattedContent = this.escapeHtml(content || '').replace(/\n/g, '<br>');
         }
         
+        let actionsHtml = '';
+        if (type === 'answer' && options && options.historyId) {
+            const historyId = this.escapeHtml(String(options.historyId));
+            actionsHtml = `
+                <span class="message-actions">
+                    <a href="#" onclick="app.downloadMessage('${historyId}','md',event)">下载MD</a>
+                    <a href="#" onclick="app.downloadMessage('${historyId}','txt',event)">TXT</a>
+                    <a href="#" onclick="app.downloadMessage('${historyId}','json',event)">JSON</a>
+                </span>
+            `;
+        }
+
         message.innerHTML = `
             <div class="message-header">
                 <i class="fas ${icon}"></i>
@@ -668,6 +835,7 @@ class ChatApp {
             <div class="message-content markdown-body">${formattedContent}</div>
             <div class="message-footer">
                 <i class="fas fa-clock"></i> ${timeStr}
+                ${actionsHtml}
             </div>
         `;
         
@@ -974,6 +1142,7 @@ class ChatApp {
         
         this.currentConversationId = null;
         this.currentHistory = [];
+        this.clearPendingAttachments();
     }
 
     showChangePasswordModal() {

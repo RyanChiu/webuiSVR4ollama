@@ -43,6 +43,7 @@ class User(db.Model, UserMixin):
     
     # 关联关系
     chats = db.relationship('ChatHistory', backref='user', lazy='dynamic', cascade='all, delete-orphan')
+    attachments = db.relationship('Attachment', backref='user', lazy='dynamic', cascade='all, delete-orphan')
     
     def set_password(self, password):
         """设置密码哈希"""
@@ -82,6 +83,7 @@ class ChatHistory(db.Model):
     question_html = db.Column(db.Text, default='')
     answer = db.Column(db.Text, nullable=False)
     answer_html = db.Column(db.Text, default='')
+    attachment_ids = db.Column(db.Text, default='[]')
     model = db.Column(db.String(100), default='')
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
     tokens_used = db.Column(db.Integer, default=0)
@@ -97,6 +99,7 @@ class ChatHistory(db.Model):
             'question_html': self.question_html or '',
             'answer': self.answer,
             'answer_html': self.answer_html or self.answer,
+            'attachment_ids': self.attachment_ids or '[]',
             'model': self.model,
             'created_at': format_datetime_value(self.created_at),
             'tokens_used': self.tokens_used or 0
@@ -104,3 +107,40 @@ class ChatHistory(db.Model):
     
     def __repr__(self):
         return f'<ChatHistory {self.id} - User {self.user_id}>'
+
+
+class Attachment(db.Model):
+    """附件模型"""
+    __tablename__ = 'attachments'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    conversation_id = db.Column(db.String(64), default='', index=True)
+    original_name = db.Column(db.String(255), nullable=False)
+    stored_name = db.Column(db.String(255), nullable=False)
+    stored_path = db.Column(db.Text, nullable=False)
+    extension = db.Column(db.String(16), default='', index=True)
+    mime_type = db.Column(db.String(120), default='')
+    size_bytes = db.Column(db.Integer, default=0)
+    sha256 = db.Column(db.String(64), default='', index=True)
+    parse_status = db.Column(db.String(20), default='ready')
+    parse_error = db.Column(db.String(255), default='')
+    extracted_text = db.Column(db.Text, default='')
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'conversation_id': self.conversation_id or '',
+            'original_name': self.original_name,
+            'extension': self.extension or '',
+            'mime_type': self.mime_type or '',
+            'size_bytes': self.size_bytes or 0,
+            'parse_status': self.parse_status or 'ready',
+            'parse_error': self.parse_error or '',
+            'created_at': format_datetime_value(self.created_at)
+        }
+
+    def __repr__(self):
+        return f'<Attachment {self.id} - User {self.user_id}>'

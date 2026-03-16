@@ -40,6 +40,8 @@
 .fa-sign-out-alt::before { content: "\21E6"; }
 .fa-microchip::before { content: "\1F9E0"; }
 .fa-paper-plane::before { content: "\27A4"; }
+.fa-paperclip::before { content: "\1F4CE"; }
+.fa-download::before { content: "\2B07"; }
 .fa-arrow-down::before { content: "\2193"; }
 .fa-eraser::before { content: "\232B"; }
 .fa-save::before { content: "\1F4BE"; }

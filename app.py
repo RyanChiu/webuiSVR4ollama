@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_from_directory
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_from_directory, make_response
 from flask_login import LoginManager, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
@@ -11,6 +11,9 @@ import secrets
 import hmac
 import time
 import threading
+import hashlib
+import json
+import io
 from collections import defaultdict, deque
 import markdown
 import bleach
@@ -20,7 +23,7 @@ from markdown.extensions.tables import TableExtension
 from markdown.extensions.toc import TocExtension
 
 # 导入数据库模型
-from database import db, User, ChatHistory, format_datetime_value
+from database import db, User, ChatHistory, Attachment, format_datetime_value
 
 # 初始化 Flask
 app = Flask(__name__)
@@ -188,15 +191,22 @@ app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{configured_db_path}"
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['OLLAMA_BASE_URL'] = os.environ.get('OLLAMA_BASE_URL', 'http://localhost:11434')
 app.config['DEFAULT_MODEL'] = os.environ.get('DEFAULT_MODEL', '').strip()
-app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH', '1048576'))  # 1MB
+app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('MAX_CONTENT_LENGTH', '26214400'))  # 25MB
 app.config['MAX_QUESTION_CHARS'] = int(os.environ.get('MAX_QUESTION_CHARS', '8000'))
 app.config['MAX_PROMPT_CHARS'] = int(os.environ.get('MAX_PROMPT_CHARS', '32000'))
+app.config['MAX_ATTACHMENT_SIZE_BYTES'] = int(os.environ.get('MAX_ATTACHMENT_SIZE_BYTES', '20971520'))  # 20MB
+app.config['MAX_ATTACHMENTS_PER_REQUEST'] = int(os.environ.get('MAX_ATTACHMENTS_PER_REQUEST', '5'))
+app.config['MAX_ATTACHMENTS_PER_MESSAGE'] = int(os.environ.get('MAX_ATTACHMENTS_PER_MESSAGE', '5'))
+app.config['MAX_ATTACHMENT_TEXT_CHARS'] = int(os.environ.get('MAX_ATTACHMENT_TEXT_CHARS', '12000'))
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = os.environ.get('SESSION_COOKIE_SAMESITE', 'Lax')
 app.config['SESSION_COOKIE_SECURE'] = env_flag('SESSION_COOKIE_SECURE', False)
 app.config['REMEMBER_COOKIE_HTTPONLY'] = True
 app.config['REMEMBER_COOKIE_SAMESITE'] = os.environ.get('REMEMBER_COOKIE_SAMESITE', 'Lax')
 app.config['REMEMBER_COOKIE_SECURE'] = env_flag('REMEMBER_COOKIE_SECURE', app.config['SESSION_COOKIE_SECURE'])
+
+attachment_base_dir = os.path.join(os.path.dirname(configured_db_path), 'uploads')
+os.makedirs(attachment_base_dir, exist_ok=True)
 
 
 class InMemoryRateLimiter:
@@ -310,6 +320,171 @@ def safe_requests_post(url, payload, timeout):
     with requests.Session() as session:
         session.trust_env = False
         return session.post(url, json=payload, timeout=timeout)
+
+
+ALLOWED_ATTACHMENT_EXTENSIONS = {
+    'pdf', 'txt', 'md',
+    'docx', 'xlsx', 'pptx'
+}
+
+
+def normalize_extension(filename):
+    if not filename or '.' not in filename:
+        return ''
+    ext = filename.rsplit('.', 1)[-1].strip().lower()
+    return ext[:16]
+
+
+def is_attachment_signature_valid(ext, file_bytes):
+    if not file_bytes:
+        return False
+    signatures = {
+        'pdf': [b'%PDF-'],
+        'docx': [b'PK\x03\x04', b'PK\x05\x06', b'PK\x07\x08'],
+        'xlsx': [b'PK\x03\x04', b'PK\x05\x06', b'PK\x07\x08'],
+        'pptx': [b'PK\x03\x04', b'PK\x05\x06', b'PK\x07\x08']
+    }
+    if ext in signatures:
+        return any(file_bytes.startswith(sig) for sig in signatures[ext])
+    return True
+
+
+def decode_text_bytes(file_bytes):
+    for encoding in ('utf-8-sig', 'utf-8', 'gb18030', 'big5', 'latin-1'):
+        try:
+            return file_bytes.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return file_bytes.decode('utf-8', errors='ignore')
+
+
+def extract_attachment_text(ext, file_bytes):
+    try:
+        if ext in {'txt', 'md'}:
+            return decode_text_bytes(file_bytes), ''
+
+        if ext == 'pdf':
+            try:
+                from pypdf import PdfReader
+            except Exception:
+                return '', '缺少 pypdf 依赖'
+            reader = PdfReader(io.BytesIO(file_bytes))
+            pages = []
+            for page in reader.pages:
+                pages.append(page.extract_text() or '')
+            return '\n'.join(pages), ''
+
+        if ext == 'docx':
+            try:
+                from docx import Document
+            except Exception:
+                return '', '缺少 python-docx 依赖'
+            doc = Document(io.BytesIO(file_bytes))
+            paragraphs = [p.text for p in doc.paragraphs if (p.text or '').strip()]
+            table_text = []
+            for table in doc.tables:
+                for row in table.rows:
+                    cells = [(cell.text or '').strip() for cell in row.cells]
+                    if any(cells):
+                        table_text.append(' | '.join(cells))
+            merged = paragraphs + table_text
+            return '\n'.join(merged), ''
+
+        if ext == 'xlsx':
+            try:
+                import openpyxl
+            except Exception:
+                return '', '缺少 openpyxl 依赖'
+            workbook = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+            lines = []
+            for sheet in workbook.worksheets:
+                lines.append(f"## Sheet: {sheet.title}")
+                for row in sheet.iter_rows(values_only=True):
+                    values = [str(v).strip() for v in row if v is not None and str(v).strip()]
+                    if values:
+                        lines.append(' | '.join(values))
+            return '\n'.join(lines), ''
+
+        if ext == 'pptx':
+            try:
+                from pptx import Presentation
+            except Exception:
+                return '', '缺少 python-pptx 依赖'
+            presentation = Presentation(io.BytesIO(file_bytes))
+            lines = []
+            for idx, slide in enumerate(presentation.slides, start=1):
+                lines.append(f"## Slide {idx}")
+                for shape in slide.shapes:
+                    text = getattr(shape, 'text', '')
+                    if (text or '').strip():
+                        lines.append(text.strip())
+            return '\n'.join(lines), ''
+
+        return '', '不支持的文件类型'
+    except Exception as exc:
+        return '', str(exc)
+
+
+def parse_attachment_ids(raw_value):
+    if isinstance(raw_value, list):
+        values = raw_value
+    elif isinstance(raw_value, str):
+        text = raw_value.strip()
+        if not text:
+            return []
+        try:
+            values = json.loads(text)
+        except Exception:
+            return []
+    else:
+        return []
+
+    normalized = []
+    for value in values:
+        try:
+            attachment_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if attachment_id > 0 and attachment_id not in normalized:
+            normalized.append(attachment_id)
+    return normalized
+
+
+def attachment_prompt_snippets(attachments, max_total_chars):
+    snippets = []
+    remaining = max(0, int(max_total_chars))
+    for attachment in attachments:
+        if remaining <= 0:
+            break
+        text = (attachment.extracted_text or '').strip()
+        if not text:
+            continue
+        reserve_for_header = 64
+        allowed = max(0, remaining - reserve_for_header)
+        if allowed <= 0:
+            break
+        chunk = text[:allowed]
+        if len(text) > len(chunk):
+            chunk += '\n...(内容已截断)'
+        header = f"[附件:{attachment.original_name}]"
+        snippet = f"{header}\n{chunk}"
+        snippets.append(snippet)
+        remaining -= len(snippet) + 2
+    return snippets
+
+
+def serialize_download_response(content, format_type, filename):
+    if format_type == 'json':
+        mime_type = 'application/json; charset=utf-8'
+    elif format_type == 'txt':
+        mime_type = 'text/plain; charset=utf-8'
+    else:
+        mime_type = 'text/markdown; charset=utf-8'
+
+    response = make_response(content)
+    response.headers['Content-Type'] = mime_type
+    response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+    return response
 
 
 @app.before_request
@@ -441,6 +616,7 @@ def ensure_db_schema_compatibility():
         ensure_column('chat_history', 'conversation_id', "conversation_id VARCHAR(64) DEFAULT ''")
         ensure_column('chat_history', 'conversation_title', "conversation_title VARCHAR(120) DEFAULT ''")
         ensure_column('chat_history', 'question_html', "question_html TEXT DEFAULT ''")
+        ensure_column('chat_history', 'attachment_ids', "attachment_ids TEXT DEFAULT '[]'")
 
         conn.commit()
     except Exception:
@@ -656,6 +832,189 @@ def user_info():
         'user': user_payload
     })
 
+
+@app.route('/api/attachments', methods=['POST'])
+@login_required
+def upload_attachments():
+    try:
+        limit_response = enforce_rate_limit(
+            'attachments',
+            f"{current_user.id}:{get_client_ip()}",
+            limit=20,
+            window_seconds=60
+        )
+        if limit_response:
+            return limit_response
+
+        files = request.files.getlist('files')
+        if not files:
+            single = request.files.get('file')
+            if single:
+                files = [single]
+        if not files:
+            return jsonify({'success': False, 'message': '未检测到上传文件'}), 400
+
+        max_count = max(1, app.config['MAX_ATTACHMENTS_PER_REQUEST'])
+        if len(files) > max_count:
+            return jsonify({'success': False, 'message': f'单次最多上传 {max_count} 个文件'}), 400
+
+        user_dir = os.path.join(attachment_base_dir, str(current_user.id))
+        os.makedirs(user_dir, exist_ok=True)
+
+        success_items = []
+        failed_items = []
+        max_size = max(1024, app.config['MAX_ATTACHMENT_SIZE_BYTES'])
+        max_text_len = max(2000, app.config['MAX_ATTACHMENT_TEXT_CHARS'])
+
+        for file in files:
+            raw_name = (file.filename or '').strip()
+            if not raw_name:
+                failed_items.append({'name': 'unknown', 'error': '文件名为空'})
+                continue
+
+            ext = normalize_extension(raw_name)
+            if ext not in ALLOWED_ATTACHMENT_EXTENSIONS:
+                failed_items.append({'name': raw_name, 'error': f'不支持的文件类型: .{ext or "unknown"}'})
+                continue
+
+            data = file.read(max_size + 1)
+            if len(data) > max_size:
+                failed_items.append({'name': raw_name, 'error': f'文件过大，单文件最大 {max_size // (1024 * 1024)}MB'})
+                continue
+            if not data:
+                failed_items.append({'name': raw_name, 'error': '空文件不允许上传'})
+                continue
+            if not is_attachment_signature_valid(ext, data):
+                failed_items.append({'name': raw_name, 'error': '文件签名校验失败'})
+                continue
+
+            digest = hashlib.sha256(data).hexdigest()
+            safe_name = (raw_name or '').replace('\x00', '').replace('\r', ' ').replace('\n', ' ').strip()
+            if not safe_name:
+                safe_name = f'file.{ext}'
+            random_name = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(6)}.{ext}"
+            stored_path = os.path.join(user_dir, random_name)
+
+            with open(stored_path, 'wb') as f:
+                f.write(data)
+
+            extracted_text, parse_error = extract_attachment_text(ext, data)
+            parse_status = 'ready' if not parse_error else 'error'
+            extracted_text = (extracted_text or '').strip()
+            if len(extracted_text) > max_text_len:
+                extracted_text = extracted_text[:max_text_len] + '\n...(内容已截断)'
+
+            attachment = Attachment(
+                user_id=current_user.id,
+                original_name=safe_name[:255],
+                stored_name=random_name,
+                stored_path=stored_path,
+                extension=ext,
+                mime_type=file.mimetype or '',
+                size_bytes=len(data),
+                sha256=digest,
+                parse_status=parse_status,
+                parse_error=(parse_error or '')[:255],
+                extracted_text=extracted_text
+            )
+            db.session.add(attachment)
+            db.session.flush()
+            success_items.append(attachment.to_dict())
+
+        db.session.commit()
+        if not success_items and failed_items:
+            return jsonify({'success': False, 'message': '上传失败', 'errors': failed_items}), 400
+
+        return jsonify({
+            'success': True,
+            'attachments': success_items,
+            'errors': failed_items
+        })
+    except Exception:
+        app.logger.exception('上传附件异常')
+        return jsonify({'success': False, 'message': '上传失败，请稍后重试'}), 500
+
+
+def resolve_chat_attachments(chat):
+    attachment_ids = parse_attachment_ids(getattr(chat, 'attachment_ids', '[]'))
+    if not attachment_ids:
+        return []
+    attachments = (
+        Attachment.query
+        .filter(Attachment.user_id == current_user.id, Attachment.id.in_(attachment_ids))
+        .all()
+    )
+    attachments_by_id = {item.id: item for item in attachments}
+    ordered = []
+    for attachment_id in attachment_ids:
+        item = attachments_by_id.get(attachment_id)
+        if item:
+            ordered.append(item)
+    return ordered
+
+
+@app.route('/api/messages/<int:history_id>/download', methods=['GET'])
+@login_required
+def download_message(history_id):
+    try:
+        format_type = (request.args.get('format') or 'md').strip().lower()
+        if format_type not in {'md', 'txt', 'json'}:
+            return jsonify({'success': False, 'message': '不支持的导出格式'}), 400
+
+        chat = ChatHistory.query.filter_by(id=history_id, user_id=current_user.id).first()
+        if not chat:
+            return jsonify({'success': False, 'message': '消息不存在'}), 404
+
+        attachments = resolve_chat_attachments(chat)
+        attachment_names = [item.original_name for item in attachments]
+        generated_at = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+
+        if format_type == 'json':
+            payload = {
+                'id': chat.id,
+                'conversation_id': chat.conversation_id or '',
+                'model': chat.model or '',
+                'created_at': format_datetime_value(chat.created_at),
+                'generated_at': generated_at,
+                'question': chat.question,
+                'answer': chat.answer,
+                'attachments': attachment_names
+            }
+            content = json.dumps(payload, ensure_ascii=False, indent=2)
+            filename = f"reply_{chat.id}.json"
+        elif format_type == 'txt':
+            content = (
+                f"Message ID: {chat.id}\n"
+                f"Conversation: {chat.conversation_id or ''}\n"
+                f"Model: {chat.model or ''}\n"
+                f"Created At: {format_datetime_value(chat.created_at)}\n"
+                f"Attachments: {', '.join(attachment_names) if attachment_names else 'None'}\n"
+                f"Generated At: {generated_at}\n\n"
+                "Question:\n"
+                f"{chat.question}\n\n"
+                "Answer:\n"
+                f"{chat.answer}\n"
+            )
+            filename = f"reply_{chat.id}.txt"
+        else:
+            content = (
+                f"# Reply #{chat.id}\n\n"
+                f"- Conversation: `{chat.conversation_id or ''}`\n"
+                f"- Model: `{chat.model or ''}`\n"
+                f"- Created At: `{format_datetime_value(chat.created_at)}`\n"
+                f"- Attachments: {', '.join(attachment_names) if attachment_names else 'None'}\n\n"
+                "## Question\n\n"
+                f"{chat.question}\n\n"
+                "## Answer\n\n"
+                f"{chat.answer}\n"
+            )
+            filename = f"reply_{chat.id}.md"
+
+        return serialize_download_response(content, format_type, filename)
+    except Exception:
+        app.logger.exception('下载单条消息异常')
+        return jsonify({'success': False, 'message': '下载失败'}), 500
+
 @app.route('/api/chat', methods=['POST'])
 @login_required
 def chat():
@@ -677,6 +1036,7 @@ def chat():
         prompt = (data.get('prompt') or '').strip()
         model = (data.get('model') or app.config['DEFAULT_MODEL']).strip()
         conversation_id = (data.get('conversation_id') or '').strip()
+        attachment_ids = parse_attachment_ids(data.get('attachment_ids'))
         
         if not question:
             return jsonify({'success': False, 'message': '问题不能为空'})
@@ -689,6 +1049,8 @@ def chat():
             prompt = question
         if len(prompt) > app.config['MAX_PROMPT_CHARS']:
             return jsonify({'success': False, 'message': f"请求上下文过长，最多 {app.config['MAX_PROMPT_CHARS']} 字符"})
+        if len(attachment_ids) > app.config['MAX_ATTACHMENTS_PER_MESSAGE']:
+            return jsonify({'success': False, 'message': f"单次最多关联 {app.config['MAX_ATTACHMENTS_PER_MESSAGE']} 个附件"})
 
         if conversation_id and (len(conversation_id) > 64 or '/' in conversation_id):
             return jsonify({'success': False, 'message': '会话标识无效'})
@@ -716,7 +1078,30 @@ def chat():
 
         if not conversation_title:
             conversation_title = question[:60]
-        
+
+        attachments = []
+        if attachment_ids:
+            attachments = (
+                Attachment.query
+                .filter(Attachment.user_id == current_user.id, Attachment.id.in_(attachment_ids))
+                .all()
+            )
+            found_ids = {item.id for item in attachments}
+            if any(attachment_id not in found_ids for attachment_id in attachment_ids):
+                return jsonify({'success': False, 'message': '附件不存在或无访问权限'})
+
+            prompt_budget = app.config['MAX_PROMPT_CHARS'] - len(prompt) - 256
+            if prompt_budget <= 0:
+                return jsonify({'success': False, 'message': '问题上下文已接近上限，无法附加附件内容'})
+            snippets = attachment_prompt_snippets(attachments, prompt_budget)
+            if snippets:
+                attachment_block = "\n\n".join(snippets)
+                prompt = (
+                    f"{prompt}\n\n"
+                    "以下是用户上传附件的文本摘录（可能不完整，请结合问题判断）：\n"
+                    f"{attachment_block}"
+                )
+
         result = query_ollama(prompt, model)
         
         if 'error' in result:
@@ -735,10 +1120,14 @@ def chat():
             question_html=html_question,
             answer=raw_answer,
             answer_html=html_answer,
+            attachment_ids=json.dumps(attachment_ids, ensure_ascii=False),
             model=model,
             tokens_used=result.get('eval_count', 0)
         )
         db.session.add(chat)
+        for attachment in attachments:
+            if not attachment.conversation_id and not conversation_id.startswith('legacy-'):
+                attachment.conversation_id = conversation_id
         db.session.commit()
         
         return jsonify({
@@ -750,6 +1139,7 @@ def chat():
             'history_id': chat.id,
             'conversation_id': conversation_id,
             'conversation_title': conversation_title,
+            'attachments': [item.to_dict() for item in attachments],
             'tokens_used': result.get('eval_count', 0)
         })
     except Exception:
@@ -940,6 +1330,114 @@ def conversation_detail(conversation_id):
         if request.method == 'DELETE':
             return jsonify({'success': False, 'message': '删除会话失败'}), 500
         return jsonify({'success': False, 'message': '获取会话失败'}), 500
+
+
+@app.route('/api/conversations/<conversation_id>/export', methods=['GET'])
+@login_required
+def export_conversation(conversation_id):
+    try:
+        format_type = (request.args.get('format') or 'md').strip().lower()
+        if format_type not in {'md', 'txt', 'json'}:
+            return jsonify({'success': False, 'message': '不支持的导出格式'}), 400
+
+        conversation_id = (conversation_id or '').strip()
+        if not conversation_id:
+            return jsonify({'success': False, 'message': '会话标识不能为空'}), 400
+
+        query = ChatHistory.query.filter_by(user_id=current_user.id)
+        if conversation_id.startswith('legacy-'):
+            try:
+                legacy_id = int(conversation_id.split('-', 1)[1])
+            except (IndexError, ValueError):
+                return jsonify({'success': False, 'message': '会话标识无效'}), 400
+            query = query.filter_by(id=legacy_id)
+        else:
+            query = query.filter_by(conversation_id=conversation_id)
+
+        chats = query.order_by(ChatHistory.created_at.asc()).all()
+        if not chats:
+            return jsonify({'success': False, 'message': '会话不存在'}), 404
+
+        conversation_title = ((chats[0].conversation_title or '').strip() or f"conversation-{conversation_id}")[:80]
+        generated_at = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+
+        if format_type == 'json':
+            payload = {
+                'conversation_id': conversation_id,
+                'title': conversation_title,
+                'generated_at': generated_at,
+                'messages': []
+            }
+            for chat in chats:
+                attachments = resolve_chat_attachments(chat)
+                payload['messages'].append({
+                    'id': chat.id,
+                    'created_at': format_datetime_value(chat.created_at),
+                    'model': chat.model or '',
+                    'question': chat.question,
+                    'answer': chat.answer,
+                    'attachments': [item.original_name for item in attachments]
+                })
+            content = json.dumps(payload, ensure_ascii=False, indent=2)
+            filename = f"conversation_{conversation_id}.json"
+        elif format_type == 'txt':
+            parts = [
+                f"Conversation: {conversation_id}",
+                f"Title: {conversation_title}",
+                f"Generated At: {generated_at}",
+                ''
+            ]
+            for index, chat in enumerate(chats, start=1):
+                attachments = resolve_chat_attachments(chat)
+                parts.extend([
+                    f"=== Round {index} / Message {chat.id} ===",
+                    f"Created At: {format_datetime_value(chat.created_at)}",
+                    f"Model: {chat.model or ''}",
+                    f"Attachments: {', '.join([item.original_name for item in attachments]) if attachments else 'None'}",
+                    '',
+                    "Question:",
+                    chat.question,
+                    '',
+                    "Answer:",
+                    chat.answer,
+                    ''
+                ])
+            content = '\n'.join(parts)
+            filename = f"conversation_{conversation_id}.txt"
+        else:
+            parts = [
+                f"# {conversation_title}",
+                '',
+                f"- Conversation ID: `{conversation_id}`",
+                f"- Generated At: `{generated_at}`",
+                ''
+            ]
+            for index, chat in enumerate(chats, start=1):
+                attachments = resolve_chat_attachments(chat)
+                attachment_text = ', '.join([item.original_name for item in attachments]) if attachments else 'None'
+                parts.extend([
+                    f"## Round {index} (Message {chat.id})",
+                    '',
+                    f"- Time: `{format_datetime_value(chat.created_at)}`",
+                    f"- Model: `{chat.model or ''}`",
+                    f"- Attachments: {attachment_text}",
+                    '',
+                    "### Question",
+                    '',
+                    chat.question,
+                    '',
+                    "### Answer",
+                    '',
+                    chat.answer,
+                    ''
+                ])
+            content = '\n'.join(parts)
+            filename = f"conversation_{conversation_id}.md"
+
+        return serialize_download_response(content, format_type, filename)
+    except Exception:
+        app.logger.exception('导出会话异常')
+        return jsonify({'success': False, 'message': '导出失败'}), 500
 
 
 @app.route('/api/conversations/<conversation_id>/title', methods=['PATCH'])

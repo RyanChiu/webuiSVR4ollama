@@ -419,11 +419,32 @@
             margin-top: 8px;
             font-size: 0.75rem;
             color: rgba(255,255,255,0.8);
-            text-align: right;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 8px;
+            flex-wrap: wrap;
         }
 
         .answer .message-footer {
             color: var(--gray);
+            justify-content: space-between;
+        }
+
+        .message-actions {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .message-actions a {
+            color: var(--primary);
+            text-decoration: none;
+            font-size: 12px;
+        }
+
+        .message-actions a:hover {
+            text-decoration: underline;
         }
 
         /* ============ Markdown样式 ============ */
@@ -622,6 +643,12 @@
 
         .input-container {
             display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .input-row {
+            display: flex;
             gap: 15px;
         }
 
@@ -643,6 +670,88 @@
             outline: none;
             border-color: var(--primary);
             box-shadow: 0 0 0 3px rgba(67,97,238,0.1);
+        }
+
+        .attachment-toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+        }
+
+        .attachment-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .btn-attach,
+        .btn-export {
+            padding: 8px 14px;
+            background: var(--light);
+            border: 1px solid var(--border);
+            color: var(--gray);
+            border-radius: 8px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            transition: var(--transition);
+            font-size: 0.9rem;
+        }
+
+        .btn-attach:hover,
+        .btn-export:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+            background: #f8f9ff;
+        }
+
+        .attachment-tip {
+            color: var(--gray);
+            font-size: 12px;
+        }
+
+        .attachment-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .attachment-item {
+            background: #eef2ff;
+            border: 1px solid #d8e0ff;
+            color: #314079;
+            border-radius: 999px;
+            padding: 4px 10px;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            max-width: 100%;
+        }
+
+        .attachment-item .name {
+            max-width: 260px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .attachment-item .remove {
+            border: none;
+            background: none;
+            color: #6576b6;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .attachment-item .remove:hover {
+            color: var(--danger);
         }
 
         .btn-send {
@@ -935,6 +1044,10 @@
             }
             
             .input-container {
+                gap: 10px;
+            }
+
+            .input-row {
                 flex-direction: column;
             }
             
@@ -1126,14 +1239,29 @@
                 
                 <div class="input-area">
                     <div class="input-container">
-                        <textarea 
-                            id="questionInput" 
-                            placeholder="输入您的问题... (Ctrl+Enter 发送，Enter 换行)"
-                            rows="3"
-                        ></textarea>
-                        <button id="sendBtn" class="btn-send">
-                            <i class="fas fa-paper-plane"></i> 发送
-                        </button>
+                        <div class="attachment-toolbar">
+                            <div class="attachment-left">
+                                <button id="attachBtn" class="btn-attach" type="button">
+                                    <i class="fas fa-paperclip"></i> 上传附件
+                                </button>
+                                <span class="attachment-tip">支持 PDF/TXT/DOCX/XLSX/PPTX（单文件20MB）</span>
+                            </div>
+                            <button id="exportConversation" class="btn-export" type="button">
+                                <i class="fas fa-download"></i> 导出会话
+                            </button>
+                            <input id="attachmentInput" type="file" multiple style="display:none;" accept=".pdf,.txt,.md,.docx,.xlsx,.pptx">
+                        </div>
+                        <div id="attachmentList" class="attachment-list"></div>
+                        <div class="input-row">
+                            <textarea 
+                                id="questionInput" 
+                                placeholder="输入您的问题... (Ctrl+Enter 发送，Enter 换行)"
+                                rows="3"
+                            ></textarea>
+                            <button id="sendBtn" class="btn-send">
+                                <i class="fas fa-paper-plane"></i> 发送
+                            </button>
+                        </div>
                     </div>
                     <div class="input-footer">
                         <label>
