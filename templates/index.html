@@ -1057,41 +1057,32 @@
             background: #fafbff;
             max-height: 420px;
             overflow-y: auto;
-            padding: 10px;
+            padding: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
             margin-bottom: 10px;
         }
 
-        .review-msg {
-            padding: 10px;
-            border-radius: 8px;
-            margin-bottom: 8px;
-            font-size: 13px;
-            line-height: 1.6;
-            white-space: pre-wrap;
+        .review-chat-box .message {
+            margin: 0;
+            max-width: 92%;
         }
 
-        .review-msg.user {
-            background: #eef2ff;
-            border: 1px solid #d8e0ff;
+        .review-chat-box .message-content {
+            font-size: 14px;
         }
 
-        .review-msg.assistant {
-            background: #ffffff;
-            border: 1px solid var(--border);
+        .review-chat-box .message-content p:last-child {
+            margin-bottom: 0;
         }
 
-        .review-msg .meta {
-            font-size: 11px;
-            color: var(--gray);
-            margin-bottom: 6px;
+        .review-chat-box .empty-history {
+            padding: 24px 12px;
         }
 
         .review-msg-actions {
-            margin-top: 8px;
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-            font-size: 12px;
+            margin-left: auto;
         }
 
         .review-msg-actions a {
@@ -1379,21 +1370,23 @@
                 border-color: #495057;
             }
 
-            .review-msg {
+            .review-chat-box .message {
                 color: #f8f9fa;
             }
 
-            .review-msg.user {
-                background: #1f3a60;
-                border-color: #2a4f83;
+            .review-chat-box .message.question {
+                background: #2557b8;
+                border-color: #2557b8;
+                color: #ffffff;
             }
 
-            .review-msg.assistant {
+            .review-chat-box .message.answer {
                 background: #2a2f36;
                 border-color: #495057;
+                color: #f8f9fa;
             }
 
-            .review-msg .meta,
+            .review-chat-box .message.answer .message-footer,
             .rule-meta,
             .rules-note {
                 color: #adb5bd;
@@ -1663,10 +1656,10 @@
             <div class="modal-footer">
                 <div class="review-footer">
                     <div class="review-left">
-                        <button class="btn-modal btn-secondary" type="button" style="flex:0;" onclick="app.requestRuleReviewVerdict()">AI判定是否通过</button>
+                        <button id="reviewVerdictBtn" class="btn-modal btn-secondary" type="button" style="flex:0;" onclick="app.requestRuleReviewVerdict()">AI判定是否通过</button>
                     </div>
                     <div class="review-right">
-                        <button class="btn-modal btn-primary" type="button" style="flex:0;" onclick="app.sendRuleReviewMessage()">发送</button>
+                        <button id="reviewSendBtn" class="btn-modal btn-primary" type="button" style="flex:0;" onclick="app.sendRuleReviewMessage()">发送</button>
                         <button class="btn-modal btn-secondary" type="button" style="flex:0;" onclick="app.hideRuleReviewModal()">关闭</button>
                     </div>
                 </div>

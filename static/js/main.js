@@ -10,6 +10,7 @@ class ChatApp {
         this.currentRuleReviewMessages = [];
         this.ruleReviewCache = {};
         this.isRuleReviewBusy = false;
+        this.ruleReviewBusyLabel = 'AI审查中...';
         this.pendingAttachments = [];
         this.isUploadingAttachments = false;
         this.searchTerm = '';
@@ -340,10 +341,44 @@ class ChatApp {
         };
     }
 
+    setRuleReviewBusyState(isBusy, label = 'AI审查中...') {
+        this.isRuleReviewBusy = Boolean(isBusy);
+        this.ruleReviewBusyLabel = label || 'AI审查中...';
+        const sendBtn = document.getElementById('reviewSendBtn');
+        const verdictBtn = document.getElementById('reviewVerdictBtn');
+        const input = document.getElementById('ruleReviewInput');
+        if (sendBtn) sendBtn.disabled = this.isRuleReviewBusy;
+        if (verdictBtn) verdictBtn.disabled = this.isRuleReviewBusy;
+        if (input) input.disabled = this.isRuleReviewBusy;
+        this.renderRuleReviewMessages();
+    }
+
+    mergeRuleReviewMessages(items) {
+        const incoming = Array.isArray(items) ? items : [];
+        const merged = Array.isArray(this.currentRuleReviewMessages) ? this.currentRuleReviewMessages.slice() : [];
+        const seenIds = new Set(
+            merged
+                .map(item => Number(item && item.id ? item.id : 0))
+                .filter(id => id > 0)
+        );
+        incoming.forEach((item) => {
+            const id = Number(item && item.id ? item.id : 0);
+            if (id > 0 && seenIds.has(id)) {
+                return;
+            }
+            if (id > 0) {
+                seenIds.add(id);
+            }
+            merged.push(item);
+        });
+        this.currentRuleReviewMessages = merged;
+    }
+
     renderRuleReviewMessages() {
         const container = document.getElementById('ruleReviewChat');
         if (!container) return;
-        if (!this.currentRuleReviewMessages || this.currentRuleReviewMessages.length === 0) {
+        const hasMessages = Array.isArray(this.currentRuleReviewMessages) && this.currentRuleReviewMessages.length > 0;
+        if (!hasMessages && !this.isRuleReviewBusy) {
             container.innerHTML = `
                 <div class="empty-history">
                     <i class="fas fa-info-circle"></i>
@@ -354,10 +389,13 @@ class ChatApp {
         }
 
         let html = '';
-        this.currentRuleReviewMessages.forEach((item) => {
+        (this.currentRuleReviewMessages || []).forEach((item) => {
             const role = String(item.role || 'assistant');
-            const roleLabel = role === 'user' ? '你' : 'AI审查助手';
-            const safeContent = this.escapeHtml(item.content || '').replace(/\n/g, '<br>');
+            const type = role === 'user' ? 'question' : 'answer';
+            const roleLabel = role === 'user' ? '您' : 'AI审查助手';
+            const icon = role === 'user' ? 'fa-user' : 'fa-robot';
+            const contentRaw = String(item.content || '');
+            const contentHtml = this.renderImmediateMarkdown(contentRaw);
             const time = this.escapeHtml(item.created_at || '');
             const reviewRuleId = Number(item.rule_id || this.currentRuleReviewId || 0);
             const reviewMsgId = Number(item.id || 0);
@@ -366,21 +404,43 @@ class ChatApp {
                 const encodedRuleId = encodeURIComponent(String(reviewRuleId));
                 const encodedMsgId = encodeURIComponent(String(reviewMsgId));
                 actionsHtml = `
-                    <div class="review-msg-actions">
+                    <span class="message-actions review-msg-actions">
                         <a href="#" onclick="app.downloadRuleReviewMessage('${encodedRuleId}', '${encodedMsgId}', 'md', event)">下载修订稿MD</a>
                         <a href="#" onclick="app.downloadRuleReviewMessage('${encodedRuleId}', '${encodedMsgId}', 'txt', event)">TXT</a>
-                    </div>
+                    </span>
                 `;
             }
             html += `
-                <div class="review-msg ${role}">
-                    <div class="meta">${roleLabel} · ${time}</div>
-                    <div>${safeContent}</div>
-                    ${actionsHtml}
+                <div class="message ${type}">
+                    <div class="message-header">
+                        <i class="fas ${icon}"></i>
+                        <strong>${roleLabel}</strong>
+                    </div>
+                    <div class="message-content markdown-body">${contentHtml}</div>
+                    <div class="message-footer">
+                        <i class="fas fa-clock"></i> ${time}
+                        ${actionsHtml}
+                    </div>
                 </div>
             `;
         });
+
+        if (this.isRuleReviewBusy) {
+            html += `
+                <div class="message answer thinking-message review-thinking">
+                    <div class="message-header">
+                        <i class="fas fa-robot"></i>
+                        <strong>AI审查助手</strong>
+                    </div>
+                    <div class="message-content thinking-content">
+                        <i class="fas fa-spinner fa-spin"></i> ${this.escapeHtml(this.ruleReviewBusyLabel || 'AI审查中...')}
+                    </div>
+                </div>
+            `;
+        }
+
         container.innerHTML = html;
+        container.querySelectorAll('.message').forEach(msgEl => this.addCopyButtons(msgEl));
         container.scrollTop = container.scrollHeight;
     }
 
@@ -434,7 +494,7 @@ class ChatApp {
         const model = modelSelect ? (modelSelect.value || '').trim() : '';
         if (!model) return;
 
-        this.isRuleReviewBusy = true;
+        this.setRuleReviewBusyState(true, 'AI正在进行首轮审核...');
         try {
             const response = await fetch(`/api/rules/${encodeURIComponent(String(this.currentRuleReviewId))}/review/messages`, {
                 method: 'POST',
@@ -450,7 +510,7 @@ class ChatApp {
             }
             const newMsgs = Array.isArray(data.messages) ? data.messages : [];
             if (newMsgs.length > 0) {
-                this.currentRuleReviewMessages = this.currentRuleReviewMessages.concat(newMsgs);
+                this.mergeRuleReviewMessages(newMsgs);
                 this.renderRuleReviewMessages();
                 this.updateRuleReviewHeader(data.rule || null);
                 this.persistRuleReviewCache();
@@ -459,7 +519,7 @@ class ChatApp {
         } catch (error) {
             console.error('生成初始规则审核失败:', error);
         } finally {
-            this.isRuleReviewBusy = false;
+            this.setRuleReviewBusyState(false);
         }
     }
 
@@ -480,7 +540,18 @@ class ChatApp {
             return;
         }
 
-        this.isRuleReviewBusy = true;
+        const tempMessageId = `local-${Date.now()}`;
+        this.currentRuleReviewMessages.push({
+            id: tempMessageId,
+            rule_id: this.currentRuleReviewId,
+            role: 'user',
+            content: text,
+            created_at: '刚刚'
+        });
+        input.value = '';
+        this.renderRuleReviewMessages();
+        this.persistRuleReviewCache();
+        this.setRuleReviewBusyState(true, 'AI审查中...');
         try {
             const response = await fetch(`/api/rules/${encodeURIComponent(String(this.currentRuleReviewId))}/review/messages`, {
                 method: 'POST',
@@ -494,18 +565,29 @@ class ChatApp {
             if (!response.ok || !data.success) {
                 throw new Error((data && data.message) || `HTTP error! status: ${response.status}`);
             }
-            input.value = '';
+            this.currentRuleReviewMessages = this.currentRuleReviewMessages.filter(
+                item => String(item.id || '') !== tempMessageId
+            );
             const newMsgs = Array.isArray(data.messages) ? data.messages : [];
-            this.currentRuleReviewMessages = this.currentRuleReviewMessages.concat(newMsgs);
+            this.mergeRuleReviewMessages(newMsgs);
             this.renderRuleReviewMessages();
             this.updateRuleReviewHeader(data.rule || null);
             this.persistRuleReviewCache();
             await this.loadRules();
         } catch (error) {
             console.error('发送规则审核消息失败:', error);
+            this.currentRuleReviewMessages = this.currentRuleReviewMessages.filter(
+                item => String(item.id || '') !== tempMessageId
+            );
+            if (!input.value.trim()) {
+                input.value = text;
+                input.focus();
+            }
+            this.renderRuleReviewMessages();
             this.showToast('发送失败: ' + error.message, 'error');
         } finally {
-            this.isRuleReviewBusy = false;
+            this.persistRuleReviewCache();
+            this.setRuleReviewBusyState(false);
         }
     }
 
@@ -518,7 +600,7 @@ class ChatApp {
             return;
         }
 
-        this.isRuleReviewBusy = true;
+        this.setRuleReviewBusyState(true, 'AI正在判定是否通过...');
         try {
             const response = await fetch(`/api/rules/${encodeURIComponent(String(this.currentRuleReviewId))}/review/evaluate`, {
                 method: 'POST',
@@ -533,7 +615,7 @@ class ChatApp {
                 throw new Error((data && data.message) || `HTTP error! status: ${response.status}`);
             }
             if (data.message) {
-                this.currentRuleReviewMessages.push(data.message);
+                this.mergeRuleReviewMessages([data.message]);
             }
             this.renderRuleReviewMessages();
             this.updateRuleReviewHeader(data.rule || null);
@@ -544,7 +626,7 @@ class ChatApp {
             console.error('规则通过判定失败:', error);
             this.showToast('判定失败: ' + error.message, 'error');
         } finally {
-            this.isRuleReviewBusy = false;
+            this.setRuleReviewBusyState(false);
         }
     }
 
