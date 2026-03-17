@@ -166,6 +166,7 @@ class RuleDocument(db.Model):
     ai_review_raw = db.Column(db.Text, default='')
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    review_messages = db.relationship('RuleReviewMessage', backref='rule', lazy='dynamic', cascade='all, delete-orphan')
 
     def to_dict(self):
         return {
@@ -186,3 +187,27 @@ class RuleDocument(db.Model):
 
     def __repr__(self):
         return f'<RuleDocument {self.id} - User {self.user_id} - v{self.version}>'
+
+
+class RuleReviewMessage(db.Model):
+    """规则审核会话消息"""
+    __tablename__ = 'rule_review_messages'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    rule_id = db.Column(db.Integer, db.ForeignKey('rule_documents.id', ondelete='CASCADE'), nullable=False, index=True)
+    role = db.Column(db.String(16), default='user', index=True)  # user / assistant / system
+    content = db.Column(db.Text, default='')
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'rule_id': self.rule_id,
+            'role': self.role or 'user',
+            'content': self.content or '',
+            'created_at': format_datetime_value(self.created_at)
+        }
+
+    def __repr__(self):
+        return f'<RuleReviewMessage {self.id} - Rule {self.rule_id}>'

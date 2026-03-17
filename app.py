@@ -23,7 +23,7 @@ from markdown.extensions.tables import TableExtension
 from markdown.extensions.toc import TocExtension
 
 # 导入数据库模型
-from database import db, User, ChatHistory, Attachment, RuleDocument, format_datetime_value
+from database import db, User, ChatHistory, Attachment, RuleDocument, RuleReviewMessage, format_datetime_value
 
 # 初始化 Flask
 app = Flask(__name__)
@@ -566,6 +566,101 @@ def normalize_rule_review_result(raw_text):
     }
 
 
+def get_rule_for_current_user(rule_id, require_current=True):
+    query = RuleDocument.query.filter_by(id=rule_id, user_id=current_user.id)
+    if require_current:
+        query = query.filter_by(is_current=True)
+    return query.first()
+
+
+def get_rule_review_transcript(rule_id, max_rounds=16):
+    messages = (
+        RuleReviewMessage.query
+        .filter_by(user_id=current_user.id, rule_id=rule_id)
+        .order_by(RuleReviewMessage.created_at.asc(), RuleReviewMessage.id.asc())
+        .all()
+    )
+    if max_rounds and len(messages) > max_rounds:
+        messages = messages[-max_rounds:]
+    return messages
+
+
+def build_rule_review_chat_prompt(rule, transcript, user_message):
+    rule_text = (rule.content_text or '')[:app.config['MAX_RULE_TEXT_CHARS']]
+    lines = []
+    for msg in transcript[-12:]:
+        role = '用户' if msg.role == 'user' else '审查助手'
+        content = (msg.content or '').strip()[:1200]
+        if content:
+            lines.append(f"{role}: {content}")
+    history_text = '\n'.join(lines) if lines else '（无历史对话）'
+    return (
+        "你是“规则审查助手”。目标：帮助用户把规则文档修改到可执行、无明显冲突、边界清晰。\n"
+        "请使用自然语言回复，不要求 JSON。\n"
+        "输出风格：\n"
+        "1) 先给当前结论（通过/未通过）\n"
+        "2) 列出关键问题（若有）\n"
+        "3) 给出可直接修改的建议条款\n"
+        "4) 若已接近通过，明确告诉用户还差什么\n\n"
+        f"规则名称: {rule.name}\n"
+        "规则正文:\n"
+        f"{rule_text}\n\n"
+        "历史对话:\n"
+        f"{history_text}\n\n"
+        "用户本轮问题:\n"
+        f"{user_message}\n"
+    )
+
+
+def build_rule_review_verdict_prompt(rule, transcript):
+    rule_text = (rule.content_text or '')[:app.config['MAX_RULE_TEXT_CHARS']]
+    lines = []
+    for msg in transcript[-20:]:
+        role = '用户' if msg.role == 'user' else '审查助手'
+        content = (msg.content or '').strip()[:1200]
+        if content:
+            lines.append(f"{role}: {content}")
+    history_text = '\n'.join(lines) if lines else '（无历史对话）'
+    return (
+        "你是规则审查最终判定器。\n"
+        "请基于规则正文和审核对话，判断该规则是否可以进入“确认通过”。\n"
+        "必须仅输出 JSON，不要输出其他内容。\n"
+        "JSON结构：\n"
+        "{\n"
+        '  "pass": true/false,\n'
+        '  "summary": "一句话总结",\n'
+        '  "issues": [\n'
+        '    {"severity":"high|medium|low","title":"问题标题","detail":"问题说明"}\n'
+        "  ],\n"
+        '  "revision_suggestion": "建议修改后的规则文本（可选）"\n'
+        "}\n\n"
+        f"规则名称: {rule.name}\n"
+        "规则正文:\n"
+        f"{rule_text}\n\n"
+        "审核对话:\n"
+        f"{history_text}\n"
+    )
+
+
+def format_rule_verdict_message(verdict):
+    result_label = '通过' if verdict.get('pass') else '未通过'
+    summary = (verdict.get('summary') or '').strip() or '无总结'
+    issues = verdict.get('issues') or []
+    rows = [f"审核结论：{result_label}", f"总结：{summary}"]
+    if issues:
+        rows.append("主要问题：")
+        for item in issues[:6]:
+            sev = item.get('severity') or 'medium'
+            title = item.get('title') or '未命名问题'
+            detail = item.get('detail') or ''
+            rows.append(f"- [{sev}] {title}：{detail}")
+    suggestion = (verdict.get('revision_suggestion') or '').strip()
+    if suggestion:
+        rows.append("建议修改稿：")
+        rows.append(suggestion[:2000])
+    return '\n'.join(rows)
+
+
 @app.before_request
 def csrf_protect():
     if request.method not in {'POST', 'PUT', 'PATCH', 'DELETE'}:
@@ -710,6 +805,12 @@ def ensure_db_schema_compatibility():
         ensure_column('rule_documents', 'ai_review_raw', "ai_review_raw TEXT DEFAULT ''")
         ensure_column('rule_documents', 'created_at', 'created_at DATETIME')
         ensure_column('rule_documents', 'updated_at', 'updated_at DATETIME')
+
+        ensure_column('rule_review_messages', 'user_id', 'user_id INTEGER')
+        ensure_column('rule_review_messages', 'rule_id', 'rule_id INTEGER')
+        ensure_column('rule_review_messages', 'role', "role VARCHAR(16) DEFAULT 'user'")
+        ensure_column('rule_review_messages', 'content', "content TEXT DEFAULT ''")
+        ensure_column('rule_review_messages', 'created_at', 'created_at DATETIME')
 
         conn.commit()
     except Exception:
@@ -935,9 +1036,15 @@ def list_rules():
         if not include_history:
             query = query.filter_by(is_current=True)
         rules = query.order_by(RuleDocument.is_active.desc(), RuleDocument.updated_at.desc(), RuleDocument.id.desc()).all()
+        items = []
+        for rule in rules:
+            data = rule.to_dict()
+            review_count = RuleReviewMessage.query.filter_by(user_id=current_user.id, rule_id=rule.id).count()
+            data['review_message_count'] = review_count
+            items.append(data)
         return jsonify({
             'success': True,
-            'rules': [item.to_dict() for item in rules]
+            'rules': items
         })
     except Exception:
         app.logger.exception('加载规则列表异常')
@@ -1076,12 +1183,30 @@ def upload_rules():
         return jsonify({'success': False, 'message': '上传规则失败'}), 500
 
 
-@app.route('/api/rules/<int:rule_id>/ai-review', methods=['POST'])
+@app.route('/api/rules/<int:rule_id>/review/messages', methods=['GET'])
 @login_required
-def ai_review_rule(rule_id):
+def list_rule_review_messages(rule_id):
+    try:
+        rule = get_rule_for_current_user(rule_id, require_current=True)
+        if not rule:
+            return jsonify({'success': False, 'message': '规则不存在'}), 404
+        messages = get_rule_review_transcript(rule.id, max_rounds=0)
+        return jsonify({
+            'success': True,
+            'rule': rule.to_dict(),
+            'messages': [item.to_dict() for item in messages]
+        })
+    except Exception:
+        app.logger.exception('加载规则审核消息异常')
+        return jsonify({'success': False, 'message': '加载审核消息失败'}), 500
+
+
+@app.route('/api/rules/<int:rule_id>/review/messages', methods=['POST'])
+@login_required
+def create_rule_review_message(rule_id):
     try:
         limit_response = enforce_rate_limit(
-            'rules_review',
+            'rules_review_chat',
             f"{current_user.id}:{get_client_ip()}",
             limit=20,
             window_seconds=60
@@ -1089,7 +1214,74 @@ def ai_review_rule(rule_id):
         if limit_response:
             return limit_response
 
-        rule = RuleDocument.query.filter_by(id=rule_id, user_id=current_user.id, is_current=True).first()
+        rule = get_rule_for_current_user(rule_id, require_current=True)
+        if not rule:
+            return jsonify({'success': False, 'message': '规则不存在'}), 404
+
+        data = request.get_json(silent=True) or {}
+        model = (data.get('model') or app.config['DEFAULT_MODEL']).strip()
+        user_message = (data.get('message') or '').strip()
+        if not model:
+            return jsonify({'success': False, 'message': '未设置模型，请先选择模型'}), 400
+        if len(user_message) > 4000:
+            return jsonify({'success': False, 'message': '消息过长，最多4000字符'}), 400
+
+        transcript = get_rule_review_transcript(rule.id, max_rounds=16)
+        if not user_message:
+            if transcript:
+                return jsonify({'success': False, 'message': '消息不能为空'}), 400
+            user_message = '请先对这份规则做第一轮审核，指出主要问题并给出修改建议。'
+
+        user_item = RuleReviewMessage(
+            user_id=current_user.id,
+            rule_id=rule.id,
+            role='user',
+            content=user_message
+        )
+        db.session.add(user_item)
+        db.session.flush()
+        transcript.append(user_item)
+
+        prompt = build_rule_review_chat_prompt(rule, transcript, user_message)
+        result = query_ollama(prompt, model)
+        if 'error' in result:
+            db.session.rollback()
+            return jsonify({'success': False, 'message': result['error']}), 500
+
+        assistant_text = (result.get('response') or '').strip() or '未收到有效审查意见，请重试。'
+        assistant_item = RuleReviewMessage(
+            user_id=current_user.id,
+            rule_id=rule.id,
+            role='assistant',
+            content=assistant_text[:12000]
+        )
+        db.session.add(assistant_item)
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+            'rule': rule.to_dict(),
+            'messages': [user_item.to_dict(), assistant_item.to_dict()]
+        })
+    except Exception:
+        app.logger.exception('创建规则审核消息异常')
+        return jsonify({'success': False, 'message': '审核对话失败'}), 500
+
+
+@app.route('/api/rules/<int:rule_id>/review/evaluate', methods=['POST'])
+@login_required
+def evaluate_rule_review(rule_id):
+    try:
+        limit_response = enforce_rate_limit(
+            'rules_review_eval',
+            f"{current_user.id}:{get_client_ip()}",
+            limit=10,
+            window_seconds=60
+        )
+        if limit_response:
+            return limit_response
+
+        rule = get_rule_for_current_user(rule_id, require_current=True)
         if not rule:
             return jsonify({'success': False, 'message': '规则不存在'}), 404
 
@@ -1098,29 +1290,47 @@ def ai_review_rule(rule_id):
         if not model:
             return jsonify({'success': False, 'message': '未设置模型，请先选择模型'}), 400
 
-        review_prompt = build_rule_review_prompt(rule.name, rule.content_text)
-        result = query_ollama(review_prompt, model)
+        transcript = get_rule_review_transcript(rule.id, max_rounds=20)
+        verdict_prompt = build_rule_review_verdict_prompt(rule, transcript)
+        result = query_ollama(verdict_prompt, model)
         if 'error' in result:
             return jsonify({'success': False, 'message': result['error']}), 500
 
         raw = result.get('response', '')
-        normalized = normalize_rule_review_result(raw)
-        rule.ai_review_passed = bool(normalized['pass'])
-        rule.ai_review_summary = normalized['summary']
+        verdict = normalize_rule_review_result(raw)
+
+        rule.ai_review_passed = bool(verdict.get('pass'))
+        rule.ai_review_summary = verdict.get('summary') or ''
         rule.ai_review_raw = raw[:12000]
         rule.status = 'ai_review_passed' if rule.ai_review_passed else 'ai_review_failed'
         if not rule.ai_review_passed:
             rule.is_active = False
+
+        assistant_note = RuleReviewMessage(
+            user_id=current_user.id,
+            rule_id=rule.id,
+            role='assistant',
+            content=format_rule_verdict_message(verdict)
+        )
+        db.session.add(assistant_note)
         db.session.commit()
 
         return jsonify({
             'success': True,
             'rule': rule.to_dict(),
-            'review': normalized
+            'verdict': verdict,
+            'message': assistant_note.to_dict()
         })
     except Exception:
-        app.logger.exception('AI审查规则异常')
-        return jsonify({'success': False, 'message': 'AI审查失败'}), 500
+        app.logger.exception('规则审核判定异常')
+        return jsonify({'success': False, 'message': '判定失败'}), 500
+
+
+@app.route('/api/rules/<int:rule_id>/ai-review', methods=['POST'])
+@login_required
+def ai_review_rule(rule_id):
+    # 兼容旧前端：转发到新版“判定通过”接口
+    return evaluate_rule_review(rule_id)
 
 
 @app.route('/api/rules/<int:rule_id>/confirm', methods=['POST'])

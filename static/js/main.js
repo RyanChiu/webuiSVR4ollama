@@ -5,6 +5,9 @@ class ChatApp {
         this.allHistory = [];
         this.rules = [];
         this.ruleReplaceTargetId = null;
+        this.currentRuleReviewId = null;
+        this.currentRuleReviewMessages = [];
+        this.isRuleReviewBusy = false;
         this.pendingAttachments = [];
         this.isUploadingAttachments = false;
         this.searchTerm = '';
@@ -116,6 +119,17 @@ class ChatApp {
         const ruleReplaceInput = document.getElementById('ruleReplaceInput');
         if (ruleReplaceInput) {
             ruleReplaceInput.addEventListener('change', (e) => this.uploadRuleFiles(e, this.ruleReplaceTargetId));
+        }
+
+        const ruleReviewInput = document.getElementById('ruleReviewInput');
+        if (ruleReviewInput) {
+            ruleReviewInput.addEventListener('keydown', (e) => {
+                const isCtrlEnter = (e.ctrlKey || e.metaKey) && e.key === 'Enter';
+                if (isCtrlEnter) {
+                    e.preventDefault();
+                    this.sendRuleReviewMessage();
+                }
+            });
         }
 
         const logoutBtn = document.getElementById('logoutBtn');
@@ -262,6 +276,225 @@ class ChatApp {
         }
     }
 
+    showRuleReviewModal(ruleId) {
+        const id = Number(ruleId || 0);
+        if (!id) return;
+        this.hideRulesModal();
+        this.currentRuleReviewId = id;
+        const modal = document.getElementById('ruleReviewModal');
+        if (modal) {
+            modal.classList.add('active');
+        }
+        this.loadRuleReviewMessages(true);
+    }
+
+    hideRuleReviewModal() {
+        const modal = document.getElementById('ruleReviewModal');
+        if (modal) {
+            modal.classList.remove('active');
+        }
+        this.currentRuleReviewId = null;
+        this.currentRuleReviewMessages = [];
+    }
+
+    updateRuleReviewHeader(rule) {
+        const header = document.getElementById('ruleReviewHeader');
+        if (!header) return;
+        if (!rule) {
+            header.textContent = '未选择规则';
+            return;
+        }
+        const status = this.getRuleStatusLabel(rule.status);
+        const activeText = rule.is_active ? '已启用' : '未启用';
+        header.textContent = `规则：${rule.name || ''} (v${Number(rule.version || 1)}) · 状态：${status} · ${activeText}`;
+    }
+
+    renderRuleReviewMessages() {
+        const container = document.getElementById('ruleReviewChat');
+        if (!container) return;
+        if (!this.currentRuleReviewMessages || this.currentRuleReviewMessages.length === 0) {
+            container.innerHTML = `
+                <div class="empty-history">
+                    <i class="fas fa-info-circle"></i>
+                    <p>还没有审核对话，先发一条消息开始。</p>
+                </div>
+            `;
+            return;
+        }
+
+        let html = '';
+        this.currentRuleReviewMessages.forEach((item) => {
+            const role = String(item.role || 'assistant');
+            const roleLabel = role === 'user' ? '你' : 'AI审查助手';
+            const safeContent = this.escapeHtml(item.content || '').replace(/\n/g, '<br>');
+            const time = this.escapeHtml(item.created_at || '');
+            html += `
+                <div class="review-msg ${role}">
+                    <div class="meta">${roleLabel} · ${time}</div>
+                    <div>${safeContent}</div>
+                </div>
+            `;
+        });
+        container.innerHTML = html;
+        container.scrollTop = container.scrollHeight;
+    }
+
+    async loadRuleReviewMessages(initial = false) {
+        if (!this.currentRuleReviewId) return;
+        const container = document.getElementById('ruleReviewChat');
+        if (initial && container) {
+            container.innerHTML = `
+                <div class="empty-history">
+                    <i class="fas fa-spinner fa-spin"></i>
+                    <p>加载审核对话中...</p>
+                </div>
+            `;
+        }
+        try {
+            const response = await fetch(`/api/rules/${encodeURIComponent(String(this.currentRuleReviewId))}/review/messages`);
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const data = await response.json();
+            if (!data.success) {
+                throw new Error(data.message || '加载审核对话失败');
+            }
+            this.updateRuleReviewHeader(data.rule || null);
+            this.currentRuleReviewMessages = Array.isArray(data.messages) ? data.messages : [];
+            this.renderRuleReviewMessages();
+            if (initial && this.currentRuleReviewMessages.length === 0) {
+                await this.requestInitialRuleReview();
+            }
+        } catch (error) {
+            console.error('加载规则审核对话失败:', error);
+            if (container) {
+                container.innerHTML = `
+                    <div class="empty-history">
+                        <i class="fas fa-exclamation-triangle" style="color: var(--danger);"></i>
+                        <p>加载失败: ${this.escapeHtml(error.message || '')}</p>
+                    </div>
+                `;
+            }
+        }
+    }
+
+    async requestInitialRuleReview() {
+        if (!this.currentRuleReviewId || this.isRuleReviewBusy) return;
+        const modelSelect = document.getElementById('modelSelect');
+        const model = modelSelect ? (modelSelect.value || '').trim() : '';
+        if (!model) return;
+
+        this.isRuleReviewBusy = true;
+        try {
+            const response = await fetch(`/api/rules/${encodeURIComponent(String(this.currentRuleReviewId))}/review/messages`, {
+                method: 'POST',
+                headers: this.withCsrfHeaders({
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                }),
+                body: JSON.stringify({ message: '', model })
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                return;
+            }
+            const newMsgs = Array.isArray(data.messages) ? data.messages : [];
+            if (newMsgs.length > 0) {
+                this.currentRuleReviewMessages = this.currentRuleReviewMessages.concat(newMsgs);
+                this.renderRuleReviewMessages();
+                this.updateRuleReviewHeader(data.rule || null);
+                await this.loadRules();
+            }
+        } catch (error) {
+            console.error('生成初始规则审核失败:', error);
+        } finally {
+            this.isRuleReviewBusy = false;
+        }
+    }
+
+    async sendRuleReviewMessage() {
+        if (!this.currentRuleReviewId || this.isRuleReviewBusy) return;
+        const input = document.getElementById('ruleReviewInput');
+        if (!input) return;
+        const text = (input.value || '').trim();
+        if (!text) {
+            this.showToast('请输入审核问题或修改要求', 'warning');
+            return;
+        }
+
+        const modelSelect = document.getElementById('modelSelect');
+        const model = modelSelect ? (modelSelect.value || '').trim() : '';
+        if (!model) {
+            this.showToast('请先选择模型', 'warning');
+            return;
+        }
+
+        this.isRuleReviewBusy = true;
+        try {
+            const response = await fetch(`/api/rules/${encodeURIComponent(String(this.currentRuleReviewId))}/review/messages`, {
+                method: 'POST',
+                headers: this.withCsrfHeaders({
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                }),
+                body: JSON.stringify({ message: text, model })
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                throw new Error((data && data.message) || `HTTP error! status: ${response.status}`);
+            }
+            input.value = '';
+            const newMsgs = Array.isArray(data.messages) ? data.messages : [];
+            this.currentRuleReviewMessages = this.currentRuleReviewMessages.concat(newMsgs);
+            this.renderRuleReviewMessages();
+            this.updateRuleReviewHeader(data.rule || null);
+            await this.loadRules();
+        } catch (error) {
+            console.error('发送规则审核消息失败:', error);
+            this.showToast('发送失败: ' + error.message, 'error');
+        } finally {
+            this.isRuleReviewBusy = false;
+        }
+    }
+
+    async requestRuleReviewVerdict() {
+        if (!this.currentRuleReviewId || this.isRuleReviewBusy) return;
+        const modelSelect = document.getElementById('modelSelect');
+        const model = modelSelect ? (modelSelect.value || '').trim() : '';
+        if (!model) {
+            this.showToast('请先选择模型', 'warning');
+            return;
+        }
+
+        this.isRuleReviewBusy = true;
+        try {
+            const response = await fetch(`/api/rules/${encodeURIComponent(String(this.currentRuleReviewId))}/review/evaluate`, {
+                method: 'POST',
+                headers: this.withCsrfHeaders({
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                }),
+                body: JSON.stringify({ model })
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                throw new Error((data && data.message) || `HTTP error! status: ${response.status}`);
+            }
+            if (data.message) {
+                this.currentRuleReviewMessages.push(data.message);
+            }
+            this.renderRuleReviewMessages();
+            this.updateRuleReviewHeader(data.rule || null);
+            this.showToast(data.verdict && data.verdict.pass ? 'AI判定：可通过' : 'AI判定：仍需修改', data.verdict && data.verdict.pass ? 'success' : 'warning');
+            await this.loadRules();
+        } catch (error) {
+            console.error('规则通过判定失败:', error);
+            this.showToast('判定失败: ' + error.message, 'error');
+        } finally {
+            this.isRuleReviewBusy = false;
+        }
+    }
+
     openRuleUploadPicker() {
         this.ruleReplaceTargetId = null;
         const input = document.getElementById('ruleFilesInput');
@@ -311,6 +544,7 @@ class ChatApp {
             const activeLabel = rule.is_active ? '停用' : '启用';
             const activeValue = rule.is_active ? '0' : '1';
             const summary = (rule.ai_review_summary || '').trim();
+            const reviewCount = Number(rule.review_message_count || 0);
             html += `
                 <div class="rule-item">
                     <div class="rule-header">
@@ -319,10 +553,10 @@ class ChatApp {
                             ${this.escapeHtml(this.getRuleStatusLabel(status))}${rule.is_active ? ' · 已启用' : ''}
                         </div>
                     </div>
-                    <div class="rule-meta">更新时间: ${this.escapeHtml(rule.updated_at || rule.created_at || '')}</div>
+                    <div class="rule-meta">更新时间: ${this.escapeHtml(rule.updated_at || rule.created_at || '')} · 审核对话: ${reviewCount} 条</div>
                     ${summary ? `<div class="rule-summary">${this.escapeHtml(summary)}</div>` : ''}
                     <div class="rule-actions">
-                        <button onclick="app.runRuleAiReview(${Number(rule.id)})">AI审查</button>
+                        <button onclick="app.showRuleReviewModal(${Number(rule.id)})">进入审核对话</button>
                         <button onclick="app.confirmRule(${Number(rule.id)})" ${canConfirm ? '' : 'disabled'}>确认规则</button>
                         <button onclick="app.toggleRuleActive(${Number(rule.id)}, ${activeValue})" ${canToggleActive ? '' : 'disabled'}>${activeLabel}</button>
                         <button onclick="app.openRuleReplacePicker(${Number(rule.id)}, event)">修订上传</button>
@@ -399,30 +633,6 @@ class ChatApp {
         } finally {
             input.value = '';
             this.ruleReplaceTargetId = null;
-        }
-    }
-
-    async runRuleAiReview(ruleId) {
-        try {
-            const modelSelect = document.getElementById('modelSelect');
-            const model = modelSelect ? (modelSelect.value || '').trim() : '';
-            const response = await fetch(`/api/rules/${encodeURIComponent(String(ruleId))}/ai-review`, {
-                method: 'POST',
-                headers: this.withCsrfHeaders({
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json'
-                }),
-                body: JSON.stringify({ model })
-            });
-            const data = await response.json();
-            if (!response.ok || !data.success) {
-                throw new Error((data && data.message) || `HTTP error! status: ${response.status}`);
-            }
-            this.showToast('AI审查完成', data.review && data.review.pass ? 'success' : 'warning');
-            await this.loadRules();
-        } catch (error) {
-            console.error('AI审查规则失败:', error);
-            this.showToast('AI审查失败: ' + error.message, 'error');
         }
     }
 
