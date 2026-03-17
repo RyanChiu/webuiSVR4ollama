@@ -913,7 +913,6 @@ class ChatApp {
         const safeFormat = ['md', 'txt', 'json'].includes(format) ? format : 'md';
         const link = document.createElement('a');
         link.href = `/api/rules/${encodeURIComponent(ruleId)}/review/messages/${encodeURIComponent(messageId)}/download?format=${safeFormat}`;
-        link.target = '_blank';
         document.body.appendChild(link);
         link.click();
         link.remove();
@@ -926,7 +925,6 @@ class ChatApp {
         const safeFormat = ['md', 'txt', 'json'].includes(format) ? format : 'md';
         const link = document.createElement('a');
         link.href = `/api/messages/${encodeURIComponent(id)}/download?format=${safeFormat}`;
-        link.target = '_blank';
         document.body.appendChild(link);
         link.click();
         link.remove();
@@ -940,7 +938,6 @@ class ChatApp {
         const safeFormat = ['md', 'txt', 'json'].includes(format) ? format : 'md';
         const link = document.createElement('a');
         link.href = `/api/conversations/${encodeURIComponent(this.currentConversationId)}/export?format=${safeFormat}`;
-        link.target = '_blank';
         document.body.appendChild(link);
         link.click();
         link.remove();

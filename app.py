@@ -15,6 +15,7 @@ import hashlib
 import json
 import io
 from collections import defaultdict, deque
+from urllib.parse import quote
 import markdown
 import bleach
 from markdown.extensions.codehilite import CodeHiliteExtension
@@ -483,14 +484,35 @@ def attachment_prompt_snippets(attachments, max_total_chars):
 def serialize_download_response(content, format_type, filename):
     if format_type == 'json':
         mime_type = 'application/json; charset=utf-8'
+        fallback = 'download.json'
     elif format_type == 'txt':
         mime_type = 'text/plain; charset=utf-8'
+        fallback = 'download.txt'
     else:
         mime_type = 'text/markdown; charset=utf-8'
+        fallback = 'download.md'
+
+    raw_name = os.path.basename(str(filename or '').strip()).replace('\x00', '')
+    raw_name = raw_name.replace('\r', '').replace('\n', '').strip()[:180]
+    if not raw_name:
+        raw_name = fallback
+
+    safe_ascii_name = []
+    for ch in raw_name:
+        if ('a' <= ch.lower() <= 'z') or ('0' <= ch <= '9') or ch in {'-', '_', '.'}:
+            safe_ascii_name.append(ch)
+        else:
+            safe_ascii_name.append('_')
+    safe_ascii_name = ''.join(safe_ascii_name).strip('._')
+    if not safe_ascii_name:
+        safe_ascii_name = fallback
 
     response = make_response(content)
     response.headers['Content-Type'] = mime_type
-    response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+    response.headers['Content-Disposition'] = (
+        f'attachment; filename="{safe_ascii_name}"; '
+        f"filename*=UTF-8''{quote(raw_name, safe='')}"
+    )
     return response
 
 
