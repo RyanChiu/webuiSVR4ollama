@@ -602,6 +602,8 @@ def build_rule_review_chat_prompt(rule, transcript, user_message):
         "2) 列出关键问题（若有）\n"
         "3) 给出可直接修改的建议条款\n"
         "4) 若已接近通过，明确告诉用户还差什么\n\n"
+        "如果用户明确要求“直接修改文档/给出最终稿”，请额外给出“修订稿全文”，"
+        "并用 ```markdown ... ``` 包裹，内容可直接保存为文件。\n\n"
         f"规则名称: {rule.name}\n"
         "规则正文:\n"
         f"{rule_text}\n\n"
@@ -1492,6 +1494,77 @@ def resolve_chat_attachments(chat):
         if item:
             ordered.append(item)
     return ordered
+
+
+@app.route('/api/rules/<int:rule_id>/review/messages/<int:message_id>/download', methods=['GET'])
+@login_required
+def download_rule_review_message(rule_id, message_id):
+    try:
+        format_type = (request.args.get('format') or 'md').strip().lower()
+        if format_type not in {'md', 'txt', 'json'}:
+            return jsonify({'success': False, 'message': '不支持的导出格式'}), 400
+
+        rule = RuleDocument.query.filter_by(id=rule_id, user_id=current_user.id).first()
+        if not rule:
+            return jsonify({'success': False, 'message': '规则不存在'}), 404
+
+        message = RuleReviewMessage.query.filter_by(
+            id=message_id,
+            user_id=current_user.id,
+            rule_id=rule.id
+        ).first()
+        if not message:
+            return jsonify({'success': False, 'message': '审核消息不存在'}), 404
+
+        body = (message.content or '').strip()
+        if not body:
+            return jsonify({'success': False, 'message': '审核消息内容为空'}), 400
+
+        generated_at = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        base_name = os.path.splitext((rule.name or '').strip())[0]
+        safe_base = ''.join(ch if (ch.isalnum() or ch in {'-', '_'}) else '_' for ch in base_name).strip('_')
+        if not safe_base:
+            safe_base = f'rule_{rule.id}'
+        safe_base = safe_base[:80]
+
+        if format_type == 'json':
+            payload = {
+                'rule_id': rule.id,
+                'rule_name': rule.name or '',
+                'message_id': message.id,
+                'role': message.role or 'assistant',
+                'created_at': format_datetime_value(message.created_at),
+                'generated_at': generated_at,
+                'content': body
+            }
+            content = json.dumps(payload, ensure_ascii=False, indent=2)
+            filename = f"{safe_base}_review_{message.id}.json"
+        elif format_type == 'txt':
+            content = (
+                f"Rule ID: {rule.id}\n"
+                f"Rule Name: {rule.name or ''}\n"
+                f"Review Message ID: {message.id}\n"
+                f"Role: {message.role or 'assistant'}\n"
+                f"Created At: {format_datetime_value(message.created_at)}\n"
+                f"Generated At: {generated_at}\n\n"
+                f"{body}\n"
+            )
+            filename = f"{safe_base}_review_{message.id}.txt"
+        else:
+            content = (
+                f"# Rule Revision Draft\n\n"
+                f"- Rule ID: `{rule.id}`\n"
+                f"- Rule Name: `{rule.name or ''}`\n"
+                f"- Review Message ID: `{message.id}`\n"
+                f"- Created At: `{format_datetime_value(message.created_at)}`\n\n"
+                f"{body}\n"
+            )
+            filename = f"{safe_base}_review_{message.id}.md"
+
+        return serialize_download_response(content, format_type, filename)
+    except Exception:
+        app.logger.exception('下载规则审核消息异常')
+        return jsonify({'success': False, 'message': '下载失败'}), 500
 
 
 @app.route('/api/messages/<int:history_id>/download', methods=['GET'])

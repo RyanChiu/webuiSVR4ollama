@@ -6,7 +6,9 @@ class ChatApp {
         this.rules = [];
         this.ruleReplaceTargetId = null;
         this.currentRuleReviewId = null;
+        this.currentRuleReviewRule = null;
         this.currentRuleReviewMessages = [];
+        this.ruleReviewCache = {};
         this.isRuleReviewBusy = false;
         this.pendingAttachments = [];
         this.isUploadingAttachments = false;
@@ -281,32 +283,61 @@ class ChatApp {
         if (!id) return;
         this.hideRulesModal();
         this.currentRuleReviewId = id;
+        const cached = this.ruleReviewCache[String(id)] || null;
+        const input = document.getElementById('ruleReviewInput');
+        if (cached && Array.isArray(cached.messages)) {
+            this.currentRuleReviewMessages = cached.messages.slice();
+            this.currentRuleReviewRule = cached.rule || null;
+            this.renderRuleReviewMessages();
+            this.updateRuleReviewHeader(this.currentRuleReviewRule);
+            if (input) {
+                input.value = cached.draftText || '';
+            }
+        } else {
+            this.currentRuleReviewMessages = [];
+            this.currentRuleReviewRule = null;
+            if (input) {
+                input.value = '';
+            }
+        }
         const modal = document.getElementById('ruleReviewModal');
         if (modal) {
             modal.classList.add('active');
         }
-        this.loadRuleReviewMessages(true);
+        this.loadRuleReviewMessages(!cached);
     }
 
     hideRuleReviewModal() {
+        this.persistRuleReviewCache();
         const modal = document.getElementById('ruleReviewModal');
         if (modal) {
             modal.classList.remove('active');
         }
         this.currentRuleReviewId = null;
-        this.currentRuleReviewMessages = [];
     }
 
     updateRuleReviewHeader(rule) {
         const header = document.getElementById('ruleReviewHeader');
         if (!header) return;
         if (!rule) {
+            this.currentRuleReviewRule = null;
             header.textContent = '未选择规则';
             return;
         }
+        this.currentRuleReviewRule = rule;
         const status = this.getRuleStatusLabel(rule.status);
         const activeText = rule.is_active ? '已启用' : '未启用';
         header.textContent = `规则：${rule.name || ''} (v${Number(rule.version || 1)}) · 状态：${status} · ${activeText}`;
+    }
+
+    persistRuleReviewCache() {
+        if (!this.currentRuleReviewId) return;
+        const input = document.getElementById('ruleReviewInput');
+        this.ruleReviewCache[String(this.currentRuleReviewId)] = {
+            messages: Array.isArray(this.currentRuleReviewMessages) ? this.currentRuleReviewMessages.slice() : [],
+            rule: this.currentRuleReviewRule || null,
+            draftText: input ? (input.value || '') : ''
+        };
     }
 
     renderRuleReviewMessages() {
@@ -328,10 +359,24 @@ class ChatApp {
             const roleLabel = role === 'user' ? '你' : 'AI审查助手';
             const safeContent = this.escapeHtml(item.content || '').replace(/\n/g, '<br>');
             const time = this.escapeHtml(item.created_at || '');
+            const reviewRuleId = Number(item.rule_id || this.currentRuleReviewId || 0);
+            const reviewMsgId = Number(item.id || 0);
+            let actionsHtml = '';
+            if (role === 'assistant' && reviewRuleId > 0 && reviewMsgId > 0) {
+                const encodedRuleId = encodeURIComponent(String(reviewRuleId));
+                const encodedMsgId = encodeURIComponent(String(reviewMsgId));
+                actionsHtml = `
+                    <div class="review-msg-actions">
+                        <a href="#" onclick="app.downloadRuleReviewMessage('${encodedRuleId}', '${encodedMsgId}', 'md', event)">下载修订稿MD</a>
+                        <a href="#" onclick="app.downloadRuleReviewMessage('${encodedRuleId}', '${encodedMsgId}', 'txt', event)">TXT</a>
+                    </div>
+                `;
+            }
             html += `
                 <div class="review-msg ${role}">
                     <div class="meta">${roleLabel} · ${time}</div>
                     <div>${safeContent}</div>
+                    ${actionsHtml}
                 </div>
             `;
         });
@@ -362,11 +407,16 @@ class ChatApp {
             this.updateRuleReviewHeader(data.rule || null);
             this.currentRuleReviewMessages = Array.isArray(data.messages) ? data.messages : [];
             this.renderRuleReviewMessages();
+            this.persistRuleReviewCache();
             if (initial && this.currentRuleReviewMessages.length === 0) {
                 await this.requestInitialRuleReview();
             }
         } catch (error) {
             console.error('加载规则审核对话失败:', error);
+            if (this.currentRuleReviewMessages && this.currentRuleReviewMessages.length > 0) {
+                this.showToast('审核对话刷新失败，已显示本地缓存', 'warning');
+                return;
+            }
             if (container) {
                 container.innerHTML = `
                     <div class="empty-history">
@@ -403,6 +453,7 @@ class ChatApp {
                 this.currentRuleReviewMessages = this.currentRuleReviewMessages.concat(newMsgs);
                 this.renderRuleReviewMessages();
                 this.updateRuleReviewHeader(data.rule || null);
+                this.persistRuleReviewCache();
                 await this.loadRules();
             }
         } catch (error) {
@@ -448,6 +499,7 @@ class ChatApp {
             this.currentRuleReviewMessages = this.currentRuleReviewMessages.concat(newMsgs);
             this.renderRuleReviewMessages();
             this.updateRuleReviewHeader(data.rule || null);
+            this.persistRuleReviewCache();
             await this.loadRules();
         } catch (error) {
             console.error('发送规则审核消息失败:', error);
@@ -485,6 +537,7 @@ class ChatApp {
             }
             this.renderRuleReviewMessages();
             this.updateRuleReviewHeader(data.rule || null);
+            this.persistRuleReviewCache();
             this.showToast(data.verdict && data.verdict.pass ? 'AI判定：可通过' : 'AI判定：仍需修改', data.verdict && data.verdict.pass ? 'success' : 'warning');
             await this.loadRules();
         } catch (error) {
@@ -610,16 +663,23 @@ class ChatApp {
         if (replaceRuleId) {
             formData.append('replace_rule_id', String(replaceRuleId));
         }
+        const uploadBtn = document.getElementById('uploadRulesBtn');
+        if (uploadBtn) uploadBtn.disabled = true;
+        this.setUploadProgress('rule', true, 0, `准备上传 ${files.length} 个规则文件...`);
+
         try {
-            const response = await fetch('/api/rules/upload', {
-                method: 'POST',
-                headers: this.withCsrfHeaders({}),
-                body: formData
+            const data = await this.uploadWithProgress('/api/rules/upload', formData, (percent) => {
+                if (typeof percent === 'number') {
+                    this.setUploadProgress('rule', true, percent, `规则文件上传中 ${percent}%`);
+                } else {
+                    this.setUploadProgress('rule', true, 100, '规则文件上传中...');
+                }
             });
-            const data = await response.json();
-            if (!response.ok || !data.success) {
-                throw new Error((data && data.message) || `HTTP error! status: ${response.status}`);
+            if (!data.success) {
+                throw new Error(data.message || '规则上传失败');
             }
+            this.setUploadProgress('rule', true, 100, '规则上传完成，处理中...');
+
             const failed = Array.isArray(data.errors) ? data.errors : [];
             if (failed.length > 0) {
                 this.showToast(`上传完成，${failed.length} 个失败`, 'warning');
@@ -631,8 +691,12 @@ class ChatApp {
             console.error('上传规则失败:', error);
             this.showToast('上传规则失败: ' + error.message, 'error');
         } finally {
+            if (uploadBtn) uploadBtn.disabled = false;
             input.value = '';
             this.ruleReplaceTargetId = null;
+            setTimeout(() => {
+                this.setUploadProgress('rule', false, 0, '准备上传规则文件...');
+            }, 450);
         }
     }
 
@@ -692,6 +756,56 @@ class ChatApp {
         return `${(size / (1024 * 1024)).toFixed(1)}MB`;
     }
 
+    setUploadProgress(prefix, active, percent = 0, label = '') {
+        const progressEl = document.getElementById(`${prefix}UploadProgress`);
+        const barEl = document.getElementById(`${prefix}UploadBar`);
+        const labelEl = document.getElementById(`${prefix}UploadLabel`);
+        if (!progressEl || !barEl || !labelEl) return;
+
+        if (active) {
+            progressEl.classList.add('active');
+        } else {
+            progressEl.classList.remove('active');
+        }
+
+        const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
+        barEl.style.width = `${safePercent}%`;
+        labelEl.textContent = label || `上传中 ${safePercent}%`;
+    }
+
+    uploadWithProgress(url, formData, onProgress = null) {
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', url, true);
+            xhr.responseType = 'json';
+            xhr.setRequestHeader('Accept', 'application/json');
+            if (this.csrfToken) {
+                xhr.setRequestHeader('X-CSRF-Token', this.csrfToken);
+            }
+
+            xhr.upload.onprogress = (event) => {
+                if (typeof onProgress !== 'function') return;
+                if (event.lengthComputable) {
+                    const percent = Math.round((event.loaded / event.total) * 100);
+                    onProgress(percent, event.loaded, event.total);
+                } else {
+                    onProgress(null, event.loaded, 0);
+                }
+            };
+
+            xhr.onerror = () => reject(new Error('网络错误'));
+            xhr.onload = () => {
+                const data = xhr.response || {};
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    resolve(data);
+                    return;
+                }
+                reject(new Error(data.message || `HTTP error! status: ${xhr.status}`));
+            };
+            xhr.send(formData);
+        });
+    }
+
     renderPendingAttachments() {
         const list = document.getElementById('attachmentList');
         if (!list) return;
@@ -746,18 +860,23 @@ class ChatApp {
         const files = Array.from(input.files);
         const formData = new FormData();
         files.forEach(file => formData.append('files', file));
+        const attachBtn = document.getElementById('attachBtn');
+        if (attachBtn) attachBtn.disabled = true;
+        this.setUploadProgress('attachment', true, 0, `准备上传 ${files.length} 个附件...`);
 
         this.isUploadingAttachments = true;
         try {
-            const response = await fetch('/api/attachments', {
-                method: 'POST',
-                headers: this.withCsrfHeaders({}),
-                body: formData
+            const data = await this.uploadWithProgress('/api/attachments', formData, (percent) => {
+                if (typeof percent === 'number') {
+                    this.setUploadProgress('attachment', true, percent, `附件上传中 ${percent}%`);
+                } else {
+                    this.setUploadProgress('attachment', true, 100, '附件上传中...');
+                }
             });
-            const data = await response.json();
-            if (!response.ok || !data.success) {
-                throw new Error((data && data.message) || `HTTP error! status: ${response.status}`);
+            if (!data.success) {
+                throw new Error(data.message || '附件上传失败');
             }
+            this.setUploadProgress('attachment', true, 100, '附件上传完成，处理中...');
 
             const attachments = Array.isArray(data.attachments) ? data.attachments : [];
             attachments.forEach(item => {
@@ -778,8 +897,26 @@ class ChatApp {
             this.showToast('上传失败: ' + error.message, 'error');
         } finally {
             this.isUploadingAttachments = false;
+            if (attachBtn) attachBtn.disabled = false;
             input.value = '';
+            setTimeout(() => {
+                this.setUploadProgress('attachment', false, 0, '准备上传...');
+            }, 450);
         }
+    }
+
+    downloadRuleReviewMessage(ruleIdEncoded, messageIdEncoded, format = 'md', event) {
+        if (event) event.preventDefault();
+        const ruleId = decodeURIComponent(String(ruleIdEncoded || '')).trim();
+        const messageId = decodeURIComponent(String(messageIdEncoded || '')).trim();
+        if (!ruleId || !messageId) return;
+        const safeFormat = ['md', 'txt', 'json'].includes(format) ? format : 'md';
+        const link = document.createElement('a');
+        link.href = `/api/rules/${encodeURIComponent(ruleId)}/review/messages/${encodeURIComponent(messageId)}/download?format=${safeFormat}`;
+        link.target = '_blank';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
     }
 
     downloadMessage(historyId, format = 'md', event) {

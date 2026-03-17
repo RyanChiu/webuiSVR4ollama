@@ -760,6 +760,41 @@
             color: var(--danger);
         }
 
+        .upload-progress {
+            display: none;
+            width: 100%;
+            margin-bottom: 10px;
+            background: #f6f8ff;
+            border: 1px solid #d9e1ff;
+            border-radius: 8px;
+            padding: 8px 10px;
+        }
+
+        .upload-progress.active {
+            display: block;
+        }
+
+        .upload-progress .label {
+            font-size: 12px;
+            color: var(--gray);
+            margin-bottom: 6px;
+        }
+
+        .upload-progress .bar {
+            width: 100%;
+            height: 8px;
+            background: #e6ebff;
+            border-radius: 999px;
+            overflow: hidden;
+        }
+
+        .upload-progress .bar-inner {
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg, #4361ee, #4cc9f0);
+            transition: width 0.2s ease;
+        }
+
         .btn-send {
             padding: 0 30px;
             background: var(--primary);
@@ -1051,6 +1086,23 @@
             margin-bottom: 6px;
         }
 
+        .review-msg-actions {
+            margin-top: 8px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            font-size: 12px;
+        }
+
+        .review-msg-actions a {
+            color: var(--primary);
+            text-decoration: none;
+        }
+
+        .review-msg-actions a:hover {
+            text-decoration: underline;
+        }
+
         .review-composer textarea {
             width: 100%;
             min-height: 80px;
@@ -1068,6 +1120,22 @@
             gap: 8px;
             flex-wrap: wrap;
             justify-content: flex-end;
+        }
+
+        .review-footer {
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .review-left,
+        .review-right {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
         }
 
         .modal-footer {
@@ -1088,6 +1156,7 @@
             justify-content: center;
             gap: 8px;
             transition: var(--transition);
+            white-space: nowrap;
         }
 
         .btn-primary {
@@ -1424,6 +1493,10 @@
                             </button>
                             <input id="attachmentInput" type="file" multiple style="display:none;" accept=".pdf,.txt,.md,.docx,.xlsx,.pptx">
                         </div>
+                        <div id="attachmentUploadProgress" class="upload-progress">
+                            <div id="attachmentUploadLabel" class="label">准备上传...</div>
+                            <div class="bar"><div id="attachmentUploadBar" class="bar-inner"></div></div>
+                        </div>
                         <div id="attachmentList" class="attachment-list"></div>
                         <div class="input-row">
                             <textarea 
@@ -1500,6 +1573,10 @@
                 </div>
                 <input id="ruleFilesInput" type="file" multiple style="display:none;" accept=".pdf,.txt,.md,.docx,.xlsx,.pptx">
                 <input id="ruleReplaceInput" type="file" style="display:none;" accept=".pdf,.txt,.md,.docx,.xlsx,.pptx">
+                <div id="ruleUploadProgress" class="upload-progress">
+                    <div id="ruleUploadLabel" class="label">准备上传规则文件...</div>
+                    <div class="bar"><div id="ruleUploadBar" class="bar-inner"></div></div>
+                </div>
                 <div id="rulesList" class="rules-list">
                     <div class="empty-history">
                         <i class="fas fa-spinner fa-spin"></i>
@@ -1533,10 +1610,14 @@
                 </div>
             </div>
             <div class="modal-footer">
-                <div class="review-actions" style="width:100%;">
-                    <button class="btn-modal btn-secondary" type="button" style="flex:0;" onclick="app.requestRuleReviewVerdict()">AI判定是否通过</button>
-                    <button class="btn-modal btn-primary" type="button" style="flex:0;" onclick="app.sendRuleReviewMessage()">发送</button>
-                    <button class="btn-modal btn-secondary" type="button" style="flex:0;" onclick="app.hideRuleReviewModal()">关闭</button>
+                <div class="review-footer">
+                    <div class="review-left">
+                        <button class="btn-modal btn-secondary" type="button" style="flex:0;" onclick="app.requestRuleReviewVerdict()">AI判定是否通过</button>
+                    </div>
+                    <div class="review-right">
+                        <button class="btn-modal btn-primary" type="button" style="flex:0;" onclick="app.sendRuleReviewMessage()">发送</button>
+                        <button class="btn-modal btn-secondary" type="button" style="flex:0;" onclick="app.hideRuleReviewModal()">关闭</button>
+                    </div>
                 </div>
             </div>
         </div>
