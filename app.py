@@ -1161,6 +1161,121 @@ def list_rules():
         return jsonify({'success': False, 'message': '加载规则失败'}), 500
 
 
+@app.route('/api/rules/<int:rule_id>/download', methods=['GET'])
+@login_required
+def download_rule(rule_id):
+    try:
+        rule = get_rule_for_current_user(rule_id, require_current=False)
+        if not rule:
+            return jsonify({'success': False, 'message': '规则不存在'}), 404
+
+        format_type = (request.args.get('format') or 'md').strip().lower()
+        if format_type not in {'md', 'txt', 'json'}:
+            return jsonify({'success': False, 'message': '不支持的导出格式'}), 400
+
+        markdown_text = get_rule_markdown_content(rule)
+        if not markdown_text:
+            return jsonify({'success': False, 'message': '规则内容为空'}), 400
+
+        base_name = os.path.splitext((rule.name or '').strip())[0].strip() or f'rule_{rule.id}'
+        safe_base = ''.join(ch if (ch.isalnum() or ch in {'-', '_'}) else '_' for ch in base_name).strip('_')
+        if not safe_base:
+            safe_base = f'rule_{rule.id}'
+        safe_base = safe_base[:80]
+
+        if format_type == 'json':
+            payload = {
+                'id': rule.id,
+                'rule_group_id': rule.rule_group_id,
+                'version': int(rule.version or 1),
+                'name': rule.name or '',
+                'source_extension': rule.extension or '',
+                'content_format': 'markdown',
+                'status': rule.status or 'draft',
+                'is_current': bool(rule.is_current),
+                'is_active': bool(rule.is_active),
+                'updated_at': format_datetime_value(rule.updated_at),
+                'content': markdown_text
+            }
+            content = json.dumps(payload, ensure_ascii=False, indent=2)
+            filename = f"{safe_base}_v{int(rule.version or 1)}.json"
+        elif format_type == 'txt':
+            content = markdown_text
+            filename = f"{safe_base}_v{int(rule.version or 1)}.txt"
+        else:
+            content = markdown_text
+            filename = f"{safe_base}_v{int(rule.version or 1)}.md"
+
+        return serialize_download_response(content, format_type, filename)
+    except Exception:
+        app.logger.exception('下载规则文件异常')
+        return jsonify({'success': False, 'message': '下载规则失败'}), 500
+
+
+@app.route('/api/rules/<int:rule_id>/versions', methods=['GET'])
+@login_required
+def list_rule_versions(rule_id):
+    try:
+        rule = get_rule_for_current_user(rule_id, require_current=False)
+        if not rule:
+            return jsonify({'success': False, 'message': '规则不存在'}), 404
+
+        versions = (
+            RuleDocument.query
+            .filter_by(user_id=current_user.id, rule_group_id=rule.rule_group_id)
+            .order_by(RuleDocument.version.desc(), RuleDocument.id.desc())
+            .all()
+        )
+        items = []
+        for item in versions:
+            data = item.to_dict()
+            data['review_message_count'] = RuleReviewMessage.query.filter_by(
+                user_id=current_user.id,
+                rule_id=item.id
+            ).count()
+            items.append(data)
+
+        return jsonify({
+            'success': True,
+            'rule_group_id': rule.rule_group_id,
+            'versions': items
+        })
+    except Exception:
+        app.logger.exception('加载规则版本列表异常')
+        return jsonify({'success': False, 'message': '加载版本失败'}), 500
+
+
+@app.route('/api/rules/<int:rule_id>/set-current', methods=['POST'])
+@login_required
+def set_current_rule(rule_id):
+    try:
+        rule = get_rule_for_current_user(rule_id, require_current=False)
+        if not rule:
+            return jsonify({'success': False, 'message': '规则不存在'}), 404
+
+        RuleDocument.query.filter_by(
+            user_id=current_user.id,
+            rule_group_id=rule.rule_group_id
+        ).update({
+            'is_current': False,
+            'is_active': False
+        }, synchronize_session=False)
+
+        rule.is_current = True
+        rule.is_active = False
+        rule.updated_at = datetime.utcnow()
+        db.session.commit()
+
+        return jsonify({
+            'success': True,
+            'message': f'已切换到版本 v{int(rule.version or 1)}',
+            'rule': rule.to_dict()
+        })
+    except Exception:
+        app.logger.exception('切换规则当前版本异常')
+        return jsonify({'success': False, 'message': '切换版本失败'}), 500
+
+
 @app.route('/api/rules/upload', methods=['POST'])
 @login_required
 def upload_rules():

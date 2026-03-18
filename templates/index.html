@@ -961,6 +961,12 @@
             color: var(--gray);
         }
 
+        .rules-subheader {
+            font-size: 13px;
+            color: var(--dark);
+            margin-bottom: 8px;
+        }
+
         .rules-list {
             max-height: 420px;
             overflow-y: auto;
@@ -1630,6 +1636,28 @@
             </div>
             <div class="modal-footer">
                 <button class="btn-modal btn-secondary" onclick="app.hideRulesModal()">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 规则版本管理 -->
+    <div id="ruleVersionsModal" class="modal">
+        <div class="modal-content" style="max-width: 820px;">
+            <div class="modal-header">
+                <h3><i class="fas fa-code-branch"></i> 规则版本管理</h3>
+                <button class="modal-close" onclick="app.hideRuleVersionsModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="ruleVersionsHeader" class="rules-subheader">加载中...</div>
+                <div id="ruleVersionsList" class="rules-list">
+                    <div class="empty-history">
+                        <i class="fas fa-spinner fa-spin"></i>
+                        <p>加载版本中...</p>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-modal btn-secondary" onclick="app.hideRuleVersionsModal()">关闭</button>
             </div>
         </div>
     </div>

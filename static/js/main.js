@@ -11,6 +11,8 @@ class ChatApp {
         this.ruleReviewCache = {};
         this.isRuleReviewBusy = false;
         this.ruleReviewBusyLabel = 'AI审查中...';
+        this.currentRuleVersionGroupId = '';
+        this.ruleVersionItems = [];
         this.pendingAttachments = [];
         this.isUploadingAttachments = false;
         this.searchTerm = '';
@@ -277,6 +279,27 @@ class ChatApp {
         if (modal) {
             modal.classList.remove('active');
         }
+    }
+
+    showRuleVersionsModal(ruleId) {
+        const id = Number(ruleId || 0);
+        if (!id) return;
+        this.hideRulesModal();
+        const modal = document.getElementById('ruleVersionsModal');
+        if (modal) {
+            modal.classList.add('active');
+        }
+        this.loadRuleVersions(id);
+    }
+
+    hideRuleVersionsModal() {
+        const modal = document.getElementById('ruleVersionsModal');
+        if (modal) {
+            modal.classList.remove('active');
+        }
+        this.currentRuleVersionGroupId = '';
+        this.ruleVersionItems = [];
+        this.showRulesModal();
     }
 
     showRuleReviewModal(ruleId) {
@@ -692,6 +715,8 @@ class ChatApp {
                     ${summary ? `<div class="rule-summary">${this.escapeHtml(summary)}</div>` : ''}
                     <div class="rule-actions">
                         <button onclick="app.showRuleReviewModal(${Number(rule.id)})">进入审核对话</button>
+                        <button onclick="app.downloadRuleDocument(${Number(rule.id)}, 'md', event)">下载MD</button>
+                        <button onclick="app.showRuleVersionsModal(${Number(rule.id)})">版本管理</button>
                         <button onclick="app.confirmRule(${Number(rule.id)})" ${canConfirm ? '' : 'disabled'}>确认规则</button>
                         <button onclick="app.toggleRuleActive(${Number(rule.id)}, ${activeValue})" ${canToggleActive ? '' : 'disabled'}>${activeLabel}</button>
                         <button onclick="app.openRuleReplacePicker(${Number(rule.id)}, event)">修订上传</button>
@@ -700,6 +725,121 @@ class ChatApp {
             `;
         });
         list.innerHTML = html;
+    }
+
+    downloadRuleDocument(ruleId, format = 'md', event) {
+        if (event) event.preventDefault();
+        const id = String(ruleId || '').trim();
+        if (!id) return;
+        const safeFormat = ['md', 'txt', 'json'].includes(format) ? format : 'md';
+        const link = document.createElement('a');
+        link.href = `/api/rules/${encodeURIComponent(id)}/download?format=${safeFormat}`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+    }
+
+    async loadRuleVersions(ruleId) {
+        const list = document.getElementById('ruleVersionsList');
+        const header = document.getElementById('ruleVersionsHeader');
+        if (list) {
+            list.innerHTML = `
+                <div class="empty-history">
+                    <i class="fas fa-spinner fa-spin"></i>
+                    <p>加载版本中...</p>
+                </div>
+            `;
+        }
+        if (header) {
+            header.textContent = '加载中...';
+        }
+        try {
+            const response = await fetch(`/api/rules/${encodeURIComponent(String(ruleId))}/versions`);
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const data = await response.json();
+            if (!data.success) {
+                throw new Error(data.message || '加载版本失败');
+            }
+            this.currentRuleVersionGroupId = String(data.rule_group_id || '');
+            this.ruleVersionItems = Array.isArray(data.versions) ? data.versions : [];
+
+            if (header) {
+                const current = this.ruleVersionItems.find(item => Boolean(item.is_current));
+                const name = current ? (current.name || 'Unnamed') : '规则';
+                header.textContent = `${name} · 共 ${this.ruleVersionItems.length} 个版本`;
+            }
+            if (!list) return;
+            if (this.ruleVersionItems.length === 0) {
+                list.innerHTML = `
+                    <div class="empty-history">
+                        <i class="fas fa-inbox"></i>
+                        <p>暂无版本</p>
+                    </div>
+                `;
+                return;
+            }
+
+            let html = '';
+            this.ruleVersionItems.forEach((item) => {
+                const status = String(item.status || 'draft');
+                const currentTag = item.is_current ? ' · 当前版本' : '';
+                const activeTag = item.is_active ? ' · 已启用' : '';
+                const reviewCount = Number(item.review_message_count || 0);
+                html += `
+                    <div class="rule-item">
+                        <div class="rule-header">
+                            <div class="rule-name">${this.escapeHtml(item.name || 'Unnamed')} (v${Number(item.version || 1)})</div>
+                            <div class="rule-status status-${this.escapeHtml(status)}">${this.escapeHtml(this.getRuleStatusLabel(status))}${currentTag}${activeTag}</div>
+                        </div>
+                        <div class="rule-meta">更新时间: ${this.escapeHtml(item.updated_at || item.created_at || '')} · 审核对话: ${reviewCount} 条</div>
+                        <div class="rule-actions">
+                            <button onclick="app.downloadRuleDocument(${Number(item.id)}, 'md', event)">下载MD</button>
+                            <button onclick="app.downloadRuleDocument(${Number(item.id)}, 'txt', event)">TXT</button>
+                            <button onclick="app.setCurrentRuleVersion(${Number(item.id)})" ${item.is_current ? 'disabled' : ''}>切换为当前</button>
+                        </div>
+                    </div>
+                `;
+            });
+            list.innerHTML = html;
+        } catch (error) {
+            console.error('加载规则版本失败:', error);
+            if (header) header.textContent = '加载失败';
+            if (list) {
+                list.innerHTML = `
+                    <div class="empty-history">
+                        <i class="fas fa-exclamation-triangle" style="color: var(--danger);"></i>
+                        <p>加载失败: ${this.escapeHtml(error.message || '')}</p>
+                    </div>
+                `;
+            }
+        }
+    }
+
+    async setCurrentRuleVersion(ruleId) {
+        if (!ruleId) return;
+        if (!confirm('确定切换到这个版本作为当前版本吗？')) {
+            return;
+        }
+        try {
+            const response = await fetch(`/api/rules/${encodeURIComponent(String(ruleId))}/set-current`, {
+                method: 'POST',
+                headers: this.withCsrfHeaders({
+                    'Accept': 'application/json'
+                })
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                throw new Error((data && data.message) || `HTTP error! status: ${response.status}`);
+            }
+            this.showToast(data.message || '版本切换成功', 'success');
+            await this.loadRules();
+            await this.loadRuleVersions(ruleId);
+        } catch (error) {
+            console.error('切换规则版本失败:', error);
+            this.showToast('切换版本失败: ' + error.message, 'error');
+        }
     }
 
     async loadRules() {
