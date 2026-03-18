@@ -157,6 +157,7 @@ class RuleDocument(db.Model):
     version = db.Column(db.Integer, default=1)
     name = db.Column(db.String(255), nullable=False)
     extension = db.Column(db.String(16), default='')
+    content_format = db.Column(db.String(16), default='plain')
     content_text = db.Column(db.Text, default='')
     status = db.Column(db.String(32), default='draft', index=True)
     is_current = db.Column(db.Boolean, default=True, index=True)
@@ -175,6 +176,7 @@ class RuleDocument(db.Model):
             'version': self.version or 1,
             'name': self.name,
             'extension': self.extension or '',
+            'content_format': self.content_format or 'plain',
             'status': self.status or 'draft',
             'is_current': bool(self.is_current),
             'is_active': bool(self.is_active),

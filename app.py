@@ -433,6 +433,83 @@ def extract_attachment_text(ext, file_bytes):
         return '', str(exc)
 
 
+def normalize_text_for_markdown(text):
+    normalized = (text or '').replace('\r\n', '\n').replace('\r', '\n')
+    lines = []
+    blank_run = 0
+    for raw in normalized.split('\n'):
+        line = raw.rstrip()
+        if not line.strip():
+            blank_run += 1
+            if blank_run > 1:
+                continue
+            lines.append('')
+            continue
+        blank_run = 0
+        lines.append(line)
+    return '\n'.join(lines).strip()
+
+
+def convert_rule_source_to_markdown(file_name, ext, extracted_text, max_chars):
+    safe_name = (file_name or '').replace('\x00', '').replace('\r', ' ').replace('\n', ' ').strip()[:255]
+    if not safe_name:
+        safe_name = f'rule.{ext or "txt"}'
+    safe_ext = (ext or normalize_extension(safe_name) or 'txt').strip().lower()[:16]
+    normalized = normalize_text_for_markdown(extracted_text)
+    if not normalized:
+        return ''
+
+    lines = normalized.split('\n')
+    transformed = []
+    for line in lines:
+        stripped = line.strip()
+        if safe_ext == 'xlsx' and stripped.startswith('## Sheet:'):
+            sheet_title = stripped.split(':', 1)[1].strip() if ':' in stripped else ''
+            transformed.append(f"## 工作表: {sheet_title or '未命名'}")
+            continue
+        if safe_ext == 'pptx' and stripped.startswith('## Slide '):
+            transformed.append(stripped.replace('## Slide ', '## 幻灯片 ', 1))
+            continue
+        transformed.append(line)
+    body = '\n'.join(transformed).strip()
+
+    if safe_ext == 'md':
+        markdown_text = body
+    else:
+        title = os.path.splitext(safe_name)[0].strip() or '规则文档'
+        markdown_text = (
+            f"# 规则文档：{title}\n\n"
+            f"- 来源文件：`{safe_name}`\n"
+            f"- 来源格式：`{safe_ext}`\n"
+            "- 规范格式：`markdown`\n\n"
+            "## 规则正文\n\n"
+            f"{body}\n"
+        )
+
+    limit = max(2000, int(max_chars or 0))
+    if len(markdown_text) > limit:
+        markdown_text = markdown_text[:limit] + '\n...(内容已截断)'
+    return markdown_text.strip()
+
+
+def get_rule_markdown_content(rule):
+    raw = (getattr(rule, 'content_text', '') or '').strip()
+    if not raw:
+        return ''
+    max_len = max(2000, app.config['MAX_RULE_TEXT_CHARS'])
+    content_format = (getattr(rule, 'content_format', '') or 'plain').strip().lower()
+    if content_format == 'markdown':
+        if len(raw) > max_len:
+            return raw[:max_len] + '\n...(内容已截断)'
+        return raw
+    return convert_rule_source_to_markdown(
+        getattr(rule, 'name', '') or 'rule.txt',
+        getattr(rule, 'extension', '') or 'txt',
+        raw,
+        max_len
+    )
+
+
 def parse_attachment_ids(raw_value):
     if isinstance(raw_value, list):
         values = raw_value
@@ -608,7 +685,7 @@ def get_rule_review_transcript(rule_id, max_rounds=16):
 
 
 def build_rule_review_chat_prompt(rule, transcript, user_message):
-    rule_text = (rule.content_text or '')[:app.config['MAX_RULE_TEXT_CHARS']]
+    rule_text = get_rule_markdown_content(rule)
     lines = []
     for msg in transcript[-12:]:
         role = '用户' if msg.role == 'user' else '审查助手'
@@ -618,6 +695,7 @@ def build_rule_review_chat_prompt(rule, transcript, user_message):
     history_text = '\n'.join(lines) if lines else '（无历史对话）'
     return (
         "你是“规则审查助手”。目标：帮助用户把规则文档修改到可执行、无明显冲突、边界清晰。\n"
+        "规则正文统一为 Markdown；你给出的修订稿也必须是 Markdown。\n"
         "请使用自然语言回复，不要求 JSON。\n"
         "输出风格：\n"
         "1) 先给当前结论（通过/未通过）\n"
@@ -637,7 +715,7 @@ def build_rule_review_chat_prompt(rule, transcript, user_message):
 
 
 def build_rule_review_verdict_prompt(rule, transcript):
-    rule_text = (rule.content_text or '')[:app.config['MAX_RULE_TEXT_CHARS']]
+    rule_text = get_rule_markdown_content(rule)
     lines = []
     for msg in transcript[-20:]:
         role = '用户' if msg.role == 'user' else '审查助手'
@@ -648,6 +726,7 @@ def build_rule_review_verdict_prompt(rule, transcript):
     return (
         "你是规则审查最终判定器。\n"
         "请基于规则正文和审核对话，判断该规则是否可以进入“确认通过”。\n"
+        "规则正文为 Markdown；如给出 revision_suggestion，必须返回 Markdown。\n"
         "必须仅输出 JSON，不要输出其他内容。\n"
         "JSON结构：\n"
         "{\n"
@@ -820,6 +899,7 @@ def ensure_db_schema_compatibility():
         ensure_column('rule_documents', 'version', 'version INTEGER DEFAULT 1')
         ensure_column('rule_documents', 'name', "name VARCHAR(255) DEFAULT ''")
         ensure_column('rule_documents', 'extension', "extension VARCHAR(16) DEFAULT ''")
+        ensure_column('rule_documents', 'content_format', "content_format VARCHAR(16) DEFAULT 'plain'")
         ensure_column('rule_documents', 'content_text', "content_text TEXT DEFAULT ''")
         ensure_column('rule_documents', 'status', "status VARCHAR(32) DEFAULT 'draft'")
         ensure_column('rule_documents', 'is_current', 'is_current BOOLEAN DEFAULT 1')
@@ -835,6 +915,12 @@ def ensure_db_schema_compatibility():
         ensure_column('rule_review_messages', 'role', "role VARCHAR(16) DEFAULT 'user'")
         ensure_column('rule_review_messages', 'content', "content TEXT DEFAULT ''")
         ensure_column('rule_review_messages', 'created_at', 'created_at DATETIME')
+
+        if table_exists('rule_documents'):
+            cursor.execute(
+                "UPDATE rule_documents SET content_format='plain' "
+                "WHERE content_format IS NULL OR TRIM(content_format)=''"
+            )
 
         conn.commit()
     except Exception:
@@ -1158,6 +1244,11 @@ def upload_rules():
             if not clean_name:
                 clean_name = f'rule.{ext}'
 
+            rule_markdown = convert_rule_source_to_markdown(clean_name, ext, extracted_text, max_text_len)
+            if not rule_markdown:
+                errors.append({'name': raw_name, 'error': '规则内容转换为 Markdown 失败'})
+                continue
+
             if replace_rule:
                 group_id = replace_rule.rule_group_id
                 latest = (
@@ -1181,7 +1272,8 @@ def upload_rules():
                 version=next_version,
                 name=clean_name,
                 extension=ext,
-                content_text=extracted_text,
+                content_format='markdown',
+                content_text=rule_markdown,
                 status='draft',
                 is_current=True,
                 is_active=False,
