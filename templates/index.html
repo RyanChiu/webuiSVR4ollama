@@ -616,28 +616,33 @@
 
         /* ============ 思考动画 ============ */
         .thinking-message {
-            opacity: 0.8;
-            background: #f5f5f5 !important;
-            border: 1px dashed var(--primary) !important;
+            opacity: 0.95;
+            background: #f4f7ff !important;
+            border: 1px dashed rgba(67, 97, 238, 0.45) !important;
         }
 
         .thinking-content {
             display: flex;
             align-items: center;
-            gap: 4px;
+            gap: 8px;
             padding: 4px 0;
         }
 
         .thinking-text {
             font-size: 14px;
             color: var(--gray);
+            font-weight: 500;
         }
 
-        .thinking-dots {
-            font-size: 20px;
-            line-height: 1;
-            letter-spacing: 2px;
-            min-width: 24px;
+        .thinking-spinner {
+            font-size: 14px;
+            color: var(--primary);
+            animation: thinkingSpin 0.9s linear infinite;
+        }
+
+        @keyframes thinkingSpin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
         }
 
         /* ============ 输入区样式 ============ */
@@ -1418,6 +1423,19 @@
                 background: #1f232b;
                 border-color: #495057;
                 color: #dee2e6;
+            }
+
+            .thinking-message {
+                background: #243047 !important;
+                border-color: rgba(122, 154, 255, 0.6) !important;
+            }
+
+            .thinking-text {
+                color: #c7d6ff;
+            }
+
+            .thinking-spinner {
+                color: #9fb9ff;
             }
             
             .chat-container {

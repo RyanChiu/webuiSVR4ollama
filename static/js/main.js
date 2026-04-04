@@ -1338,30 +1338,17 @@ class ChatApp {
                 <strong>AI助手</strong>
             </div>
             <div class="message-content thinking-content">
-                <span class="thinking-text">正在思考</span>
-                <span class="thinking-dots">...</span>
+                <i class="fas fa-circle-notch thinking-spinner" aria-hidden="true"></i>
+                <span class="thinking-text">正在思考...</span>
             </div>
         `;
         
         messagesContainer.appendChild(thinkingMessage);
         this.scrollToBottom();
-        
-        let dotCount = 0;
-        this.thinkingInterval = setInterval(() => {
-            const dotsElement = document.querySelector('.thinking-dots');
-            if (dotsElement) {
-                dotCount = (dotCount % 3) + 1;
-                dotsElement.textContent = '.'.repeat(dotCount);
-            }
-        }, 500);
     }
 
     hideThinking() {
         this.isThinking = false;
-        if (this.thinkingInterval) {
-            clearInterval(this.thinkingInterval);
-            this.thinkingInterval = null;
-        }
         const thinkingMessage = document.getElementById('thinking-message');
         if (thinkingMessage) {
             thinkingMessage.remove();
