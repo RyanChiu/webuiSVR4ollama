@@ -38,11 +38,15 @@
 .fa-clock::before { content: "\1F552"; }
 .fa-key::before { content: "\1F511"; }
 .fa-sign-out-alt::before { content: "\21E6"; }
+.fa-sliders-h::before,
+.fa-cog::before,
+.fa-gear::before { content: "\2699"; }
 .fa-microchip::before { content: "\1F9E0"; }
 .fa-paper-plane::before { content: "\27A4"; }
 .fa-paperclip::before { content: "\1F4CE"; }
 .fa-download::before { content: "\2B07"; }
 .fa-file-alt::before { content: "\1F4C4"; }
+.fa-code-branch::before { content: "\2387"; }
 .fa-check-circle::before { content: "\2705"; }
 .fa-arrow-down::before { content: "\2193"; }
 .fa-eraser::before { content: "\232B"; }
@@ -53,5 +57,6 @@
 .fa-copy::before { content: "\29C9"; }
 .fa-pen::before { content: "\270E"; }
 .fa-times::before { content: "\2715"; }
+.fa-circle-notch::before { content: "\25CC"; }
 .fa-eye::before { content: "\1F441"; }
 .fa-eye-slash::before { content: "\1F648"; }
