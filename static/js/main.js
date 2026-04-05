@@ -1918,15 +1918,17 @@ class ChatApp {
         const overall = this.normalizeUsageStats(this.usageStats && this.usageStats.overall);
         const conversation = this.normalizeUsageStats(this.usageStats && this.usageStats.conversation);
 
-        const tokenCount = document.getElementById('tokenCount');
-        if (tokenCount) {
-            tokenCount.innerHTML = `<i class="fas fa-microchip"></i> Tokens 总计: ${overall.tokens_used} | 当前会话: ${conversation.tokens_used}`;
-        }
+        const tokenTotalValue = document.getElementById('tokenTotalValue');
+        if (tokenTotalValue) tokenTotalValue.textContent = String(overall.tokens_used);
 
-        const responseTime = document.getElementById('responseTime');
-        if (responseTime) {
-            responseTime.innerHTML = `<i class="fas fa-clock"></i> 耗时 总计: ${this.formatDuration(overall.response_ms)} | 当前会话: ${this.formatDuration(conversation.response_ms)}`;
-        }
+        const tokenConversationValue = document.getElementById('tokenConversationValue');
+        if (tokenConversationValue) tokenConversationValue.textContent = String(conversation.tokens_used);
+
+        const timeTotalValue = document.getElementById('timeTotalValue');
+        if (timeTotalValue) timeTotalValue.textContent = this.formatDuration(overall.response_ms);
+
+        const timeConversationValue = document.getElementById('timeConversationValue');
+        if (timeConversationValue) timeConversationValue.textContent = this.formatDuration(conversation.response_ms);
     }
 
     setOverallUsageStats(stats) {

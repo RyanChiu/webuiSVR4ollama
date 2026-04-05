@@ -401,10 +401,38 @@
         }
 
         .header-stats {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(140px, auto));
+            gap: 8px 10px;
+            justify-content: end;
+            align-items: center;
+        }
+
+        .stat-chip {
             display: flex;
-            gap: 20px;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.7);
+            white-space: nowrap;
+        }
+
+        .stat-chip i {
+            color: var(--primary);
+            opacity: 0.9;
+        }
+
+        .stat-label {
             color: var(--gray);
-            font-size: 0.9rem;
+            font-size: 0.78rem;
+        }
+
+        .stat-value {
+            color: var(--dark);
+            font-weight: 600;
+            font-size: 0.82rem;
         }
 
         .chat-container {
@@ -1326,7 +1354,8 @@
             }
             
             .header-stats {
-                justify-content: space-between;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                width: 100%;
             }
             
             .input-container {
@@ -1441,6 +1470,11 @@
                 background: #2a2f36;
                 border-color: #495057;
                 color: #f8f9fa;
+            }
+
+            .stat-chip {
+                background: rgba(255, 255, 255, 0.04);
+                border-color: #495057;
             }
 
             .review-chat-box .message.answer .message-footer,
@@ -1590,8 +1624,26 @@
                     </div>
                 </div>
                 <div class="header-stats">
-                    <span id="tokenCount"><i class="fas fa-microchip"></i> Tokens 总计: 0 | 当前会话: 0</span>
-                    <span id="responseTime"><i class="fas fa-clock"></i> 耗时 总计: 0秒 | 当前会话: 0秒</span>
+                    <span class="stat-chip">
+                        <i class="fas fa-microchip"></i>
+                        <span class="stat-label">Token总计</span>
+                        <span id="tokenTotalValue" class="stat-value">0</span>
+                    </span>
+                    <span class="stat-chip">
+                        <i class="fas fa-microchip"></i>
+                        <span class="stat-label">会话Token</span>
+                        <span id="tokenConversationValue" class="stat-value">0</span>
+                    </span>
+                    <span class="stat-chip">
+                        <i class="fas fa-clock"></i>
+                        <span class="stat-label">耗时总计</span>
+                        <span id="timeTotalValue" class="stat-value">0秒</span>
+                    </span>
+                    <span class="stat-chip">
+                        <i class="fas fa-clock"></i>
+                        <span class="stat-label">会话耗时</span>
+                        <span id="timeConversationValue" class="stat-value">0秒</span>
+                    </span>
                 </div>
             </div>
             
