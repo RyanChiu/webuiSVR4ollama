@@ -88,6 +88,7 @@ class ChatHistory(db.Model):
     model = db.Column(db.String(100), default='')
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
     tokens_used = db.Column(db.Integer, default=0)
+    response_ms = db.Column(db.Integer, default=0)
     
     def to_dict(self):
         """转换为字典"""
@@ -103,7 +104,8 @@ class ChatHistory(db.Model):
             'attachment_ids': self.attachment_ids or '[]',
             'model': self.model,
             'created_at': format_datetime_value(self.created_at),
-            'tokens_used': self.tokens_used or 0
+            'tokens_used': self.tokens_used or 0,
+            'response_ms': self.response_ms or 0
         }
     
     def __repr__(self):

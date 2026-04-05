@@ -17,6 +17,7 @@ import io
 import ipaddress
 from collections import defaultdict, deque
 from urllib.parse import quote, urlparse
+from sqlalchemy import func
 import markdown
 import bleach
 from markdown.extensions.codehilite import CodeHiliteExtension
@@ -405,6 +406,33 @@ def extract_model_names(payload):
         if name:
             model_names.append(name)
     return model_names
+
+
+def aggregate_usage_stats(query):
+    stats_row = query.with_entities(
+        func.count(ChatHistory.id),
+        func.coalesce(func.sum(ChatHistory.tokens_used), 0),
+        func.coalesce(func.sum(ChatHistory.response_ms), 0)
+    ).first()
+    if not stats_row:
+        return {
+            'message_count': 0,
+            'tokens_used': 0,
+            'response_ms': 0
+        }
+    return {
+        'message_count': int(stats_row[0] or 0),
+        'tokens_used': int(stats_row[1] or 0),
+        'response_ms': int(stats_row[2] or 0)
+    }
+
+
+def extract_response_ms(result, fallback_ms):
+    if isinstance(result, dict):
+        duration_ns = result.get('total_duration')
+        if isinstance(duration_ns, (int, float)) and duration_ns > 0:
+            return max(1, int(duration_ns / 1_000_000))
+    return max(0, int(fallback_ms or 0))
 
 
 def safe_requests_get(url, timeout):
@@ -984,6 +1012,7 @@ def ensure_db_schema_compatibility():
         ensure_column('chat_history', 'answer_html', "answer_html TEXT DEFAULT ''")
         ensure_column('chat_history', 'model', "model VARCHAR(100) DEFAULT ''")
         ensure_column('chat_history', 'tokens_used', 'tokens_used INTEGER DEFAULT 0')
+        ensure_column('chat_history', 'response_ms', 'response_ms INTEGER DEFAULT 0')
         ensure_column('chat_history', 'created_at', 'created_at DATETIME')
         ensure_column('chat_history', 'conversation_id', "conversation_id VARCHAR(64) DEFAULT ''")
         ensure_column('chat_history', 'conversation_title', "conversation_title VARCHAR(120) DEFAULT ''")
@@ -1065,6 +1094,7 @@ def query_ollama(prompt, model=None):
         for base_url in get_ollama_base_urls():
             url = f"{base_url}/api/generate"
             try:
+                start_ts = time.perf_counter()
                 response = safe_requests_post(url, {
                     "model": model,
                     "prompt": prompt,
@@ -1072,9 +1102,11 @@ def query_ollama(prompt, model=None):
                 }, timeout=300)
                 response.raise_for_status()
                 result = response.json()
+                elapsed_ms = int((time.perf_counter() - start_ts) * 1000)
                 return {
                     "response": result.get("response", ""),
-                    "eval_count": result.get("eval_count", 0)
+                    "eval_count": result.get("eval_count", 0),
+                    "response_ms": extract_response_ms(result, elapsed_ms)
                 }
             except requests.exceptions.RequestException as exc:
                 last_error = exc
@@ -2165,7 +2197,8 @@ def chat():
             answer_html=html_answer,
             attachment_ids=json.dumps(attachment_ids, ensure_ascii=False),
             model=model,
-            tokens_used=result.get('eval_count', 0)
+            tokens_used=result.get('eval_count', 0),
+            response_ms=result.get('response_ms', 0)
         )
         db.session.add(chat)
         for attachment in attachments:
@@ -2183,7 +2216,8 @@ def chat():
             'conversation_id': conversation_id,
             'conversation_title': conversation_title,
             'attachments': [item.to_dict() for item in attachments],
-            'tokens_used': result.get('eval_count', 0)
+            'tokens_used': result.get('eval_count', 0),
+            'response_ms': result.get('response_ms', 0)
         })
     except Exception:
         app.logger.exception('聊天处理异常')
@@ -2200,6 +2234,8 @@ def get_history():
         except ValueError:
             limit = 300
         limit = max(1, min(limit, 1000))
+
+        overall_stats = aggregate_usage_stats(ChatHistory.query.filter_by(user_id=current_user.id))
         
         query = ChatHistory.query.filter_by(user_id=current_user.id)
         
@@ -2267,7 +2303,10 @@ def get_history():
         
         return jsonify({
             'success': True,
-            'history': history_list
+            'history': history_list,
+            'stats': {
+                'overall': overall_stats
+            }
         })
     except Exception:
         app.logger.exception('获取历史记录异常')
@@ -2362,11 +2401,18 @@ def conversation_detail(conversation_id):
         if pending_render_updates:
             db.session.commit()
 
+        conversation_stats = {
+            'message_count': len(chats),
+            'tokens_used': sum(int(chat.tokens_used or 0) for chat in chats),
+            'response_ms': sum(int(getattr(chat, 'response_ms', 0) or 0) for chat in chats)
+        }
+
         return jsonify({
             'success': True,
             'conversation_id': conversation_id,
             'conversation_title': effective_title,
-            'history': history_list
+            'history': history_list,
+            'stats': conversation_stats
         })
     except Exception:
         app.logger.exception('会话记录操作异常')

@@ -18,6 +18,10 @@ class ChatApp {
         this.searchTerm = '';
         this.isThinking = false;
         this.canManageSystemConfig = false;
+        this.usageStats = {
+            overall: { message_count: 0, tokens_used: 0, response_ms: 0 },
+            conversation: { message_count: 0, tokens_used: 0, response_ms: 0, conversation_id: '' }
+        };
         this.csrfToken = this.getCsrfToken();
         this.init();
     }
@@ -37,6 +41,7 @@ class ChatApp {
 
     init() {
         this.bindEvents();
+        this.renderUsageStats();
         this.renderPendingAttachments();
         this.loadModels();
         this.loadHistory();
@@ -1345,6 +1350,12 @@ class ChatApp {
             
             if (data.success) {
                 this.allHistory = data.history || [];
+                if (data.stats && data.stats.overall) {
+                    this.setOverallUsageStats(data.stats.overall);
+                }
+                if (!this.currentConversationId) {
+                    this.setConversationUsageStats({ message_count: 0, tokens_used: 0, response_ms: 0 }, '');
+                }
                 this.renderHistoryList();
             } else {
                 throw new Error(data.message || '加载失败');
@@ -1467,6 +1478,9 @@ class ChatApp {
                             );
                         });
                     }
+
+                    const conversationStats = data.stats || this.calculateConversationStats(conversationHistory);
+                    this.setConversationUsageStats(conversationStats, conversationId);
                     
                     this.scrollToBottom();
                     
@@ -1608,13 +1622,9 @@ class ChatApp {
                     { type: 'answer', content: data.answer }
                 );
                 
+                this.bumpUsageStats(data.tokens_used || 0, data.response_ms || 0);
                 await this.loadHistory();
                 this.clearPendingAttachments();
-                
-                this.updateStats({ 
-                    tokens_used: data.tokens_used || 0,
-                    timestamp: new Date()
-                });
                 
                 this.showToast('发送成功', 'success');
             } else {
@@ -1881,31 +1891,92 @@ class ChatApp {
         return div.innerHTML;
     }
 
-    updateStats(stats) {
-        if (stats) {
-            const tokenCount = document.getElementById('tokenCount');
-            if (tokenCount) {
-                tokenCount.innerHTML = `<i class="fas fa-microchip"></i> Tokens: ${stats.tokens_used || 0}`;
-            }
-            
-            const responseTime = document.getElementById('responseTime');
-            if (responseTime) {
-                let timeStr = '--:--:--';
-                if (stats.timestamp) {
-                    try {
-                        const date = stats.timestamp instanceof Date ? stats.timestamp : new Date(stats.timestamp);
-                        timeStr = date.toLocaleTimeString('zh-CN', { 
-                            hour: '2-digit', 
-                            minute: '2-digit',
-                            second: '2-digit'
-                        });
-                    } catch (e) {
-                        timeStr = '刚刚';
-                    }
-                }
-                responseTime.innerHTML = `<i class="fas fa-clock"></i> 时间: ${timeStr}`;
-            }
+    normalizeUsageStats(stats) {
+        const payload = stats || {};
+        return {
+            message_count: Math.max(0, Number(payload.message_count || 0)),
+            tokens_used: Math.max(0, Number(payload.tokens_used || 0)),
+            response_ms: Math.max(0, Number(payload.response_ms || 0))
+        };
+    }
+
+    formatDuration(ms) {
+        const totalSeconds = Math.max(0, Math.floor(Number(ms || 0) / 1000));
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+        if (hours > 0) {
+            return `${hours}小时${minutes}分${seconds}秒`;
         }
+        if (minutes > 0) {
+            return `${minutes}分${seconds}秒`;
+        }
+        return `${seconds}秒`;
+    }
+
+    renderUsageStats() {
+        const overall = this.normalizeUsageStats(this.usageStats && this.usageStats.overall);
+        const conversation = this.normalizeUsageStats(this.usageStats && this.usageStats.conversation);
+
+        const tokenCount = document.getElementById('tokenCount');
+        if (tokenCount) {
+            tokenCount.innerHTML = `<i class="fas fa-microchip"></i> Tokens 总计: ${overall.tokens_used} | 当前会话: ${conversation.tokens_used}`;
+        }
+
+        const responseTime = document.getElementById('responseTime');
+        if (responseTime) {
+            responseTime.innerHTML = `<i class="fas fa-clock"></i> 耗时 总计: ${this.formatDuration(overall.response_ms)} | 当前会话: ${this.formatDuration(conversation.response_ms)}`;
+        }
+    }
+
+    setOverallUsageStats(stats) {
+        this.usageStats.overall = this.normalizeUsageStats(stats);
+        this.renderUsageStats();
+    }
+
+    setConversationUsageStats(stats, conversationId = '') {
+        const normalized = this.normalizeUsageStats(stats);
+        this.usageStats.conversation = {
+            ...normalized,
+            conversation_id: String(conversationId || '')
+        };
+        this.renderUsageStats();
+    }
+
+    calculateConversationStats(historyItems) {
+        const items = Array.isArray(historyItems) ? historyItems : [];
+        const stats = { message_count: 0, tokens_used: 0, response_ms: 0 };
+        items.forEach((item) => {
+            stats.message_count += 1;
+            stats.tokens_used += Math.max(0, Number(item && item.tokens_used ? item.tokens_used : 0));
+            stats.response_ms += Math.max(0, Number(item && item.response_ms ? item.response_ms : 0));
+        });
+        return stats;
+    }
+
+    bumpUsageStats(tokensUsed = 0, responseMs = 0) {
+        const tokenDelta = Math.max(0, Number(tokensUsed || 0));
+        const msDelta = Math.max(0, Number(responseMs || 0));
+        if (tokenDelta <= 0 && msDelta <= 0) return;
+
+        const overall = this.normalizeUsageStats(this.usageStats.overall);
+        const conversation = this.normalizeUsageStats(this.usageStats.conversation);
+        overall.tokens_used += tokenDelta;
+        overall.response_ms += msDelta;
+        overall.message_count += 1;
+
+        if (this.currentConversationId) {
+            conversation.tokens_used += tokenDelta;
+            conversation.response_ms += msDelta;
+            conversation.message_count += 1;
+            this.usageStats.conversation = {
+                ...conversation,
+                conversation_id: String(this.currentConversationId)
+            };
+        }
+
+        this.usageStats.overall = overall;
+        this.renderUsageStats();
     }
 
     scrollToBottom() {
@@ -2016,6 +2087,7 @@ class ChatApp {
                 this.allHistory = [];
                 this.currentConversationId = null;
                 this.currentHistory = [];
+                this.setOverallUsageStats({ message_count: 0, tokens_used: 0, response_ms: 0 });
                 this.renderHistoryList();
                 this.clearChat();
             } else {
@@ -2130,15 +2202,10 @@ class ChatApp {
         
         const input = document.getElementById('questionInput');
         if (input) input.value = '';
-        
-        const tokenCount = document.getElementById('tokenCount');
-        if (tokenCount) tokenCount.innerHTML = '<i class="fas fa-microchip"></i> Tokens: 0';
-        
-        const responseTime = document.getElementById('responseTime');
-        if (responseTime) responseTime.innerHTML = '<i class="fas fa-clock"></i> 时间: --:--:--';
-        
+
         this.currentConversationId = null;
         this.currentHistory = [];
+        this.setConversationUsageStats({ message_count: 0, tokens_used: 0, response_ms: 0 }, '');
         this.clearPendingAttachments();
     }
 
