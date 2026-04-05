@@ -213,3 +213,23 @@ class RuleReviewMessage(db.Model):
 
     def __repr__(self):
         return f'<RuleReviewMessage {self.id} - Rule {self.rule_id}>'
+
+
+class AppSetting(db.Model):
+    """系统设置模型（全局）"""
+    __tablename__ = 'app_settings'
+
+    id = db.Column(db.Integer, primary_key=True)
+    key = db.Column(db.String(80), unique=True, nullable=False, index=True)
+    value = db.Column(db.Text, default='')
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'key': self.key,
+            'value': self.value or '',
+            'updated_at': format_datetime_value(self.updated_at)
+        }
+
+    def __repr__(self):
+        return f'<AppSetting {self.key}>'

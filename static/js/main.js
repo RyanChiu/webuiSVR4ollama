@@ -17,6 +17,7 @@ class ChatApp {
         this.isUploadingAttachments = false;
         this.searchTerm = '';
         this.isThinking = false;
+        this.canManageSystemConfig = false;
         this.csrfToken = this.getCsrfToken();
         this.init();
     }
@@ -106,6 +107,11 @@ class ChatApp {
             openRulesBtn.addEventListener('click', () => this.showRulesModal());
         }
 
+        const openSystemConfigBtn = document.getElementById('openSystemConfigBtn');
+        if (openSystemConfigBtn) {
+            openSystemConfigBtn.addEventListener('click', () => this.showSystemConfigModal());
+        }
+
         const uploadRulesBtn = document.getElementById('uploadRulesBtn');
         if (uploadRulesBtn) {
             uploadRulesBtn.addEventListener('click', () => this.openRuleUploadPicker());
@@ -186,9 +192,14 @@ class ChatApp {
                 const user = data.user;
                 const userNameEl = document.getElementById('userName');
                 const userAvatarEl = document.getElementById('userAvatar');
+                const openSystemConfigBtn = document.getElementById('openSystemConfigBtn');
                 
                 if (userNameEl) userNameEl.textContent = user.username || '用户';
                 if (userAvatarEl) userAvatarEl.textContent = (user.username || 'U').charAt(0).toUpperCase();
+                this.canManageSystemConfig = Boolean(user && user.is_admin);
+                if (openSystemConfigBtn) {
+                    openSystemConfigBtn.style.display = this.canManageSystemConfig ? 'inline-flex' : 'none';
+                }
                 
                 const userRoleEl = document.getElementById('userRole');
                 if (userRoleEl) {
@@ -200,8 +211,10 @@ class ChatApp {
             console.error('加载用户信息失败:', error);
             const userNameEl = document.getElementById('userName');
             const userRoleEl = document.getElementById('userRole');
+            const openSystemConfigBtn = document.getElementById('openSystemConfigBtn');
             if (userNameEl) userNameEl.textContent = '加载失败';
             if (userRoleEl) userRoleEl.innerHTML = '<i class="fas fa-exclamation-triangle"></i> 用户信息不可用';
+            if (openSystemConfigBtn) openSystemConfigBtn.style.display = 'none';
         }
     }
 
@@ -263,6 +276,156 @@ class ChatApp {
         } catch (error) {
             console.error('加载模型失败:', error);
             select.innerHTML = '<option value="" selected disabled>无法获取模型列表</option>';
+        }
+    }
+
+    setOllamaConfigStatus(message, level = 'info') {
+        const statusEl = document.getElementById('ollamaConfigStatus');
+        if (!statusEl) return;
+        statusEl.textContent = message || '';
+        if (level === 'error') {
+            statusEl.style.color = '#dc3545';
+        } else if (level === 'success') {
+            statusEl.style.color = '#28a745';
+        } else if (level === 'warning') {
+            statusEl.style.color = '#f8961e';
+        } else {
+            statusEl.style.color = '';
+        }
+    }
+
+    setOllamaConfigBusy(isBusy) {
+        const input = document.getElementById('ollamaBaseUrlInput');
+        const testBtn = document.getElementById('testOllamaConfigBtn');
+        const saveBtn = document.getElementById('saveOllamaConfigBtn');
+        if (input) input.disabled = Boolean(isBusy);
+        if (testBtn) testBtn.disabled = Boolean(isBusy);
+        if (saveBtn) saveBtn.disabled = Boolean(isBusy);
+    }
+
+    showSystemConfigModal() {
+        if (!this.canManageSystemConfig) {
+            this.showToast('仅管理员可配置Ollama服务地址', 'warning');
+            return;
+        }
+        const modal = document.getElementById('systemConfigModal');
+        if (modal) {
+            modal.classList.add('active');
+        }
+        this.setOllamaConfigStatus('加载配置中...');
+        this.loadOllamaConfig();
+    }
+
+    hideSystemConfigModal() {
+        const modal = document.getElementById('systemConfigModal');
+        if (modal) {
+            modal.classList.remove('active');
+        }
+    }
+
+    async loadOllamaConfig() {
+        const input = document.getElementById('ollamaBaseUrlInput');
+        if (!input) return;
+        this.setOllamaConfigBusy(true);
+        try {
+            const response = await fetch('/api/system/ollama-config', {
+                headers: { 'Accept': 'application/json' }
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                throw new Error((data && data.message) || `HTTP error! status: ${response.status}`);
+            }
+            if (!data.can_edit) {
+                this.hideSystemConfigModal();
+                this.showToast('仅管理员可修改此配置', 'warning');
+                return;
+            }
+            input.value = (data.config && data.config.base_url) ? data.config.base_url : '';
+            const sourceLabel = data.config && data.config.source === 'system' ? '系统配置' : '环境变量默认值';
+            this.setOllamaConfigStatus(`当前来源：${sourceLabel}`);
+        } catch (error) {
+            console.error('加载Ollama配置失败:', error);
+            this.setOllamaConfigStatus(`加载失败: ${error.message}`, 'error');
+        } finally {
+            this.setOllamaConfigBusy(false);
+        }
+    }
+
+    async testOllamaConfig() {
+        if (!this.canManageSystemConfig) {
+            this.showToast('仅管理员可测试配置', 'warning');
+            return;
+        }
+        const input = document.getElementById('ollamaBaseUrlInput');
+        const baseUrl = input ? (input.value || '').trim() : '';
+        if (!baseUrl) {
+            this.setOllamaConfigStatus('请先输入服务地址', 'warning');
+            return;
+        }
+        this.setOllamaConfigBusy(true);
+        this.setOllamaConfigStatus('连接测试中...');
+        try {
+            const response = await fetch('/api/system/ollama-config/test', {
+                method: 'POST',
+                headers: this.withCsrfHeaders({
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                }),
+                body: JSON.stringify({ base_url: baseUrl })
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                throw new Error((data && data.message) || `HTTP error! status: ${response.status}`);
+            }
+            const result = data.result || {};
+            const msg = `${data.message || '连接成功'}\n地址: ${result.base_url || baseUrl}`;
+            this.setOllamaConfigStatus(msg, 'success');
+            this.showToast('连接测试通过', 'success');
+        } catch (error) {
+            console.error('测试Ollama配置失败:', error);
+            this.setOllamaConfigStatus(`连接失败: ${error.message}`, 'error');
+            this.showToast('连接测试失败', 'error');
+        } finally {
+            this.setOllamaConfigBusy(false);
+        }
+    }
+
+    async saveOllamaConfig() {
+        if (!this.canManageSystemConfig) {
+            this.showToast('仅管理员可保存配置', 'warning');
+            return;
+        }
+        const input = document.getElementById('ollamaBaseUrlInput');
+        const baseUrl = input ? (input.value || '').trim() : '';
+        if (!baseUrl) {
+            this.setOllamaConfigStatus('请先输入服务地址', 'warning');
+            return;
+        }
+        this.setOllamaConfigBusy(true);
+        this.setOllamaConfigStatus('保存中...');
+        try {
+            const response = await fetch('/api/system/ollama-config', {
+                method: 'POST',
+                headers: this.withCsrfHeaders({
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                }),
+                body: JSON.stringify({ base_url: baseUrl })
+            });
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                throw new Error((data && data.message) || `HTTP error! status: ${response.status}`);
+            }
+            const statusMsg = data.probe_message || data.message || '配置已保存';
+            this.setOllamaConfigStatus(statusMsg, data.probe ? 'success' : 'warning');
+            this.showToast('配置已保存', 'success');
+            await this.loadModels();
+        } catch (error) {
+            console.error('保存Ollama配置失败:', error);
+            this.setOllamaConfigStatus(`保存失败: ${error.message}`, 'error');
+            this.showToast('保存配置失败', 'error');
+        } finally {
+            this.setOllamaConfigBusy(false);
         }
     }
 

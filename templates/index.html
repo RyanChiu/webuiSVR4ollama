@@ -332,6 +332,12 @@
             gap: 20px;
         }
 
+        .header-controls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
         .header-left h1 {
             display: flex;
             align-items: center;
@@ -353,6 +359,32 @@
         .model-selector select:focus {
             outline: none;
             border-color: var(--primary);
+        }
+
+        .system-config-form {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .system-config-form label {
+            font-size: 13px;
+            color: var(--gray);
+        }
+
+        .system-config-form input {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 14px;
+        }
+
+        .system-config-status {
+            min-height: 22px;
+            font-size: 12px;
+            color: var(--gray);
+            white-space: pre-wrap;
         }
 
         .header-stats {
@@ -1370,7 +1402,8 @@
             .search-box input,
             .model-selector select,
             .input-container textarea,
-            .modal-body input {
+            .modal-body input,
+            .system-config-form input {
                 background: #2d2d2d;
                 border-color: #495057;
                 color: #f8f9fa;
@@ -1532,10 +1565,15 @@
             <div class="chat-header">
                 <div class="header-left">
                     <h1><i class="fas fa-robot"></i> Ollama WebUI</h1>
-                    <div class="model-selector">
-                        <select id="modelSelect">
-                            <option value="">加载模型中...</option>
-                        </select>
+                    <div class="header-controls">
+                        <div class="model-selector">
+                            <select id="modelSelect">
+                                <option value="">加载模型中...</option>
+                            </select>
+                        </div>
+                        <button id="openSystemConfigBtn" class="btn-icon" type="button" title="Ollama服务配置" style="display:none;">
+                            <i class="fas fa-sliders-h"></i>
+                        </button>
                     </div>
                 </div>
                 <div class="header-stats">
@@ -1616,6 +1654,28 @@
                 <button class="btn-modal btn-secondary" onclick="app.hideChangePasswordModal()">
                     取消
                 </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Ollama服务配置 -->
+    <div id="systemConfigModal" class="modal">
+        <div class="modal-content" style="max-width: 620px;">
+            <div class="modal-header">
+                <h3><i class="fas fa-sliders-h"></i> Ollama服务配置</h3>
+                <button class="modal-close" onclick="app.hideSystemConfigModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="system-config-form">
+                    <label for="ollamaBaseUrlInput">服务地址（含端口）</label>
+                    <input id="ollamaBaseUrlInput" type="text" placeholder="例如: http://127.0.0.1:11434">
+                    <div id="ollamaConfigStatus" class="system-config-status"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="testOllamaConfigBtn" class="btn-modal btn-secondary" type="button" onclick="app.testOllamaConfig()">连接测试</button>
+                <button id="saveOllamaConfigBtn" class="btn-modal btn-primary" type="button" onclick="app.saveOllamaConfig()">保存配置</button>
+                <button class="btn-modal btn-secondary" type="button" onclick="app.hideSystemConfigModal()">关闭</button>
             </div>
         </div>
     </div>

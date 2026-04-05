@@ -14,8 +14,9 @@ import threading
 import hashlib
 import json
 import io
+import ipaddress
 from collections import defaultdict, deque
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 import markdown
 import bleach
 from markdown.extensions.codehilite import CodeHiliteExtension
@@ -24,7 +25,7 @@ from markdown.extensions.tables import TableExtension
 from markdown.extensions.toc import TocExtension
 
 # 导入数据库模型
-from database import db, User, ChatHistory, Attachment, RuleDocument, RuleReviewMessage, format_datetime_value
+from database import db, User, ChatHistory, Attachment, RuleDocument, RuleReviewMessage, AppSetting, format_datetime_value
 
 # 初始化 Flask
 app = Flask(__name__)
@@ -279,13 +280,107 @@ def enforce_rate_limit(scope, identity, limit, window_seconds=60):
     return response
 
 
+def is_admin_user():
+    return bool(current_user.is_authenticated and (getattr(current_user, 'username', '') or '').strip().lower() == 'admin')
+
+
+def get_app_setting_value(key, default=''):
+    try:
+        item = AppSetting.query.filter_by(key=key).first()
+        if item and (item.value or '').strip():
+            return (item.value or '').strip()
+    except Exception:
+        app.logger.exception('读取系统设置失败: %s', key)
+    return default
+
+
+def set_app_setting_value(key, value):
+    item = AppSetting.query.filter_by(key=key).first()
+    if not item:
+        item = AppSetting(key=key)
+        db.session.add(item)
+    item.value = (value or '').strip()
+    return item
+
+
+def normalize_ollama_base_url(raw_value):
+    text = (raw_value or '').strip()
+    if not text:
+        return ''
+    if '://' not in text:
+        text = f"http://{text}"
+
+    parsed = urlparse(text)
+    if parsed.scheme not in {'http', 'https'}:
+        raise ValueError('仅支持 http 或 https')
+    if not parsed.hostname:
+        raise ValueError('地址缺少主机名')
+    if parsed.path not in {'', '/'} or parsed.params or parsed.query or parsed.fragment:
+        raise ValueError('地址中不应包含路径、参数或片段')
+
+    hostname = parsed.hostname
+    host_render = f"[{hostname}]" if ':' in hostname and not hostname.startswith('[') else hostname
+    port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+    return f"{parsed.scheme}://{host_render}:{port}"
+
+
+def is_allowed_ollama_base_url(base_url):
+    allow_remote = env_flag('ALLOW_REMOTE_OLLAMA_URL', False)
+    if allow_remote:
+        return True
+    try:
+        parsed = urlparse(base_url)
+        host = (parsed.hostname or '').strip().lower()
+    except Exception:
+        return False
+    if not host:
+        return False
+    if host in {'localhost', '127.0.0.1', '::1'}:
+        return True
+    if host == 'host.docker.internal' or host.endswith('.local'):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+        return bool(ip.is_loopback or ip.is_private or ip.is_link_local)
+    except ValueError:
+        return False
+
+
+def get_effective_ollama_base_url():
+    env_default = (app.config.get('OLLAMA_BASE_URL') or '').strip()
+    configured = get_app_setting_value('ollama_base_url', default=env_default).strip()
+    try:
+        return normalize_ollama_base_url(configured)
+    except ValueError:
+        try:
+            return normalize_ollama_base_url(env_default)
+        except ValueError:
+            return 'http://127.0.0.1:11434'
+
+
+def probe_ollama_endpoint(base_url):
+    normalized = normalize_ollama_base_url(base_url)
+    response = safe_requests_get(f"{normalized}/api/tags", timeout=5)
+    response.raise_for_status()
+    payload = response.json()
+    models = extract_model_names(payload)
+    return {
+        'base_url': normalized,
+        'models': models,
+        'model_count': len(models)
+    }
+
+
 def get_ollama_base_urls():
-    configured = (app.config.get('OLLAMA_BASE_URL') or '').strip()
+    configured = (get_effective_ollama_base_url() or '').strip()
     candidates = []
     for url in [configured, 'http://127.0.0.1:11434', 'http://localhost:11434']:
         if not url:
             continue
-        normalized = url.rstrip('/')
+        try:
+            normalized = normalize_ollama_base_url(url)
+        except ValueError:
+            continue
         if normalized not in candidates:
             candidates.append(normalized)
     return candidates
@@ -1131,10 +1226,115 @@ def user_info():
             'created_at': str(getattr(current_user, 'created_at', '') or ''),
             'last_login': str(getattr(current_user, 'last_login', '') or '')
         }
+    user_payload['is_admin'] = is_admin_user()
     return jsonify({
         'success': True,
         'user': user_payload
     })
+
+
+@app.route('/api/system/ollama-config', methods=['GET'])
+@login_required
+def get_ollama_config():
+    try:
+        stored_value = get_app_setting_value('ollama_base_url', default='').strip()
+        source = 'system' if stored_value else 'env'
+        return jsonify({
+            'success': True,
+            'config': {
+                'base_url': get_effective_ollama_base_url(),
+                'source': source
+            },
+            'can_edit': is_admin_user()
+        })
+    except Exception:
+        app.logger.exception('读取 Ollama 配置异常')
+        return jsonify({'success': False, 'message': '读取配置失败'}), 500
+
+
+@app.route('/api/system/ollama-config/test', methods=['POST'])
+@login_required
+def test_ollama_config():
+    try:
+        if not is_admin_user():
+            return jsonify({'success': False, 'message': '仅管理员可执行连接测试'}), 403
+
+        data = request.get_json(silent=True) or {}
+        candidate = (data.get('base_url') or '').strip()
+        if not candidate:
+            candidate = get_effective_ollama_base_url()
+        normalized = normalize_ollama_base_url(candidate)
+        if not is_allowed_ollama_base_url(normalized):
+            return jsonify({'success': False, 'message': '仅允许本机或内网地址，请检查配置'}), 400
+
+        probe = probe_ollama_endpoint(normalized)
+        return jsonify({
+            'success': True,
+            'message': f"连接成功，发现 {probe['model_count']} 个模型",
+            'result': probe
+        })
+    except ValueError as exc:
+        return jsonify({'success': False, 'message': f'配置格式错误: {exc}'}), 400
+    except Exception as exc:
+        app.logger.warning('测试 Ollama 配置失败: %s', exc)
+        return jsonify({'success': False, 'message': f'连接失败: {exc}'}), 500
+
+
+@app.route('/api/system/ollama-config', methods=['POST'])
+@login_required
+def save_ollama_config():
+    try:
+        if not is_admin_user():
+            return jsonify({'success': False, 'message': '仅管理员可修改配置'}), 403
+
+        limit_response = enforce_rate_limit(
+            'system_ollama_config',
+            f"{current_user.id}:{get_client_ip()}",
+            limit=20,
+            window_seconds=300
+        )
+        if limit_response:
+            return limit_response
+
+        data = request.get_json(silent=True) or {}
+        base_url = (data.get('base_url') or '').strip()
+        if not base_url:
+            return jsonify({'success': False, 'message': '服务地址不能为空'}), 400
+
+        normalized = normalize_ollama_base_url(base_url)
+        if not is_allowed_ollama_base_url(normalized):
+            return jsonify({'success': False, 'message': '仅允许本机或内网地址，请检查配置'}), 400
+
+        set_app_setting_value('ollama_base_url', normalized)
+        db.session.commit()
+
+        probe_result = None
+        probe_error = ''
+        try:
+            probe_result = probe_ollama_endpoint(normalized)
+        except Exception as exc:
+            probe_error = str(exc)
+
+        payload = {
+            'success': True,
+            'message': '配置已保存',
+            'config': {
+                'base_url': normalized,
+                'source': 'system'
+            }
+        }
+        if probe_result:
+            payload['probe'] = probe_result
+            payload['probe_message'] = f"连接成功，发现 {probe_result['model_count']} 个模型"
+        elif probe_error:
+            payload['probe_message'] = f"配置已保存，但连接测试失败: {probe_error}"
+        return jsonify(payload)
+    except ValueError as exc:
+        return jsonify({'success': False, 'message': f'配置格式错误: {exc}'}), 400
+    except Exception:
+        app.logger.exception('保存 Ollama 配置异常')
+        db.session.rollback()
+        return jsonify({'success': False, 'message': '保存配置失败'}), 500
 
 
 @app.route('/api/rules', methods=['GET'])
