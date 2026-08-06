@@ -15,6 +15,8 @@ import hashlib
 import json
 import io
 import ipaddress
+import tarfile
+import zipfile
 from collections import defaultdict, deque
 from urllib.parse import quote, urlparse
 from sqlalchemy import func
@@ -201,6 +203,9 @@ app.config['MAX_ATTACHMENT_SIZE_BYTES'] = int(os.environ.get('MAX_ATTACHMENT_SIZ
 app.config['MAX_ATTACHMENTS_PER_REQUEST'] = int(os.environ.get('MAX_ATTACHMENTS_PER_REQUEST', '5'))
 app.config['MAX_ATTACHMENTS_PER_MESSAGE'] = int(os.environ.get('MAX_ATTACHMENTS_PER_MESSAGE', '5'))
 app.config['MAX_ATTACHMENT_TEXT_CHARS'] = int(os.environ.get('MAX_ATTACHMENT_TEXT_CHARS', '12000'))
+app.config['MAX_ARCHIVE_MEMBERS'] = int(os.environ.get('MAX_ARCHIVE_MEMBERS', '30'))
+app.config['MAX_ARCHIVE_MEMBER_SIZE_BYTES'] = int(os.environ.get('MAX_ARCHIVE_MEMBER_SIZE_BYTES', '10485760'))  # 10MB
+app.config['MAX_ARCHIVE_EXTRACTED_BYTES'] = int(os.environ.get('MAX_ARCHIVE_EXTRACTED_BYTES', '20971520'))  # 20MB
 app.config['MAX_RULE_FILE_SIZE_BYTES'] = int(os.environ.get('MAX_RULE_FILE_SIZE_BYTES', '10485760'))  # 10MB
 app.config['MAX_RULE_FILES_PER_REQUEST'] = int(os.environ.get('MAX_RULE_FILES_PER_REQUEST', '3'))
 app.config['MAX_RULE_TEXT_CHARS'] = int(os.environ.get('MAX_RULE_TEXT_CHARS', '20000'))
@@ -451,17 +456,47 @@ def safe_requests_post(url, payload, timeout):
 
 ALLOWED_ATTACHMENT_EXTENSIONS = {
     'pdf', 'txt', 'md',
-    'docx', 'xlsx', 'pptx'
+    'docx', 'xlsx', 'pptx',
+    'zip', 'tar', 'tgz'
 }
 ALLOWED_RULE_EXTENSIONS = {
     'pdf', 'txt', 'md',
     'docx', 'xlsx', 'pptx'
+}
+ARCHIVE_ATTACHMENT_EXTENSIONS = {
+    'zip', 'tar', 'tgz'
+}
+ARCHIVE_TEXT_MEMBER_EXTENSIONS = {
+    'txt', 'md', 'markdown', 'rst',
+    'py', 'pyw', 'ipynb',
+    'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx',
+    'html', 'htm', 'css', 'scss', 'sass', 'less',
+    'json', 'jsonl', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'env',
+    'sh', 'bash', 'zsh', 'fish', 'ps1', 'bat', 'cmd',
+    'sql', 'xml', 'svg',
+    'vue', 'svelte',
+    'java', 'kt', 'kts', 'scala',
+    'go', 'rs', 'c', 'cc', 'cpp', 'cxx', 'h', 'hh', 'hpp', 'hxx',
+    'cs', 'php', 'rb', 'swift', 'm', 'mm',
+    'lua', 'pl', 'pm', 'r', 'dart',
+    'gradle', 'properties', 'lock', 'gitignore', 'dockerignore'
+}
+ARCHIVE_TEXT_MEMBER_FILENAMES = {
+    'dockerfile', 'containerfile', 'makefile', 'rakefile', 'gemfile', 'podfile',
+    'procfile', 'justfile', 'license', 'copying', 'notice', 'readme', 'changelog'
 }
 
 
 def normalize_extension(filename):
     if not filename or '.' not in filename:
         return ''
+    lower = filename.strip().lower()
+    compound_extensions = {
+        '.tar.gz': 'tgz'
+    }
+    for suffix, normalized in compound_extensions.items():
+        if lower.endswith(suffix):
+            return normalized
     ext = filename.rsplit('.', 1)[-1].strip().lower()
     return ext[:16]
 
@@ -469,6 +504,14 @@ def normalize_extension(filename):
 def is_attachment_signature_valid(ext, file_bytes):
     if not file_bytes:
         return False
+    if ext == 'zip':
+        return zipfile.is_zipfile(io.BytesIO(file_bytes))
+    if ext in {'tar', 'tgz'}:
+        try:
+            with tarfile.open(fileobj=io.BytesIO(file_bytes), mode='r:*'):
+                return True
+        except tarfile.TarError:
+            return False
     signatures = {
         'pdf': [b'%PDF-'],
         'docx': [b'PK\x03\x04', b'PK\x05\x06', b'PK\x07\x08'],
@@ -480,6 +523,137 @@ def is_attachment_signature_valid(ext, file_bytes):
     return True
 
 
+def is_archive_attachment(ext):
+    return ext in ARCHIVE_ATTACHMENT_EXTENSIONS
+
+
+def is_extractable_archive_member(ext):
+    return (
+        ext in ALLOWED_ATTACHMENT_EXTENSIONS
+        or ext in ARCHIVE_TEXT_MEMBER_EXTENSIONS
+    ) and not is_archive_attachment(ext)
+
+
+def is_archive_text_member(name, ext):
+    base = os.path.basename(name or '').strip().lower()
+    return ext in ARCHIVE_TEXT_MEMBER_EXTENSIONS or base in ARCHIVE_TEXT_MEMBER_FILENAMES
+
+
+def archive_limits():
+    return {
+        'max_members': max(1, int(app.config.get('MAX_ARCHIVE_MEMBERS', 30))),
+        'max_member_size': max(1024, int(app.config.get('MAX_ARCHIVE_MEMBER_SIZE_BYTES', 10 * 1024 * 1024))),
+        'max_extracted_bytes': max(1024, int(app.config.get('MAX_ARCHIVE_EXTRACTED_BYTES', 20 * 1024 * 1024))),
+        'max_text_chars': max(2000, int(app.config.get('MAX_ATTACHMENT_TEXT_CHARS', 12000)))
+    }
+
+
+def should_skip_archive_member(name):
+    normalized = (name or '').replace('\\', '/').strip()
+    if not normalized or normalized.endswith('/'):
+        return True
+    parts = [part for part in normalized.split('/') if part]
+    if not parts or any(part == '..' for part in parts):
+        return True
+    base = parts[-1]
+    return base.startswith('._') or normalized.startswith('__MACOSX/')
+
+
+def format_archive_member_text(name, text):
+    safe_name = (name or 'unnamed').replace('\x00', '').replace('\r', ' ').replace('\n', ' ').strip()
+    return f"[压缩包内文件:{safe_name}]\n{text.strip()}"
+
+
+def collect_archive_member_text(name, member_bytes, remaining_chars):
+    ext = normalize_extension(name)
+    if not is_extractable_archive_member(ext) and not is_archive_text_member(name, ext):
+        return '', ''
+    text, parse_error = extract_attachment_text(ext, member_bytes, name)
+    text = (text or '').strip()
+    if parse_error or not text:
+        return '', parse_error or '未提取到可用文本'
+    if len(text) > remaining_chars:
+        text = text[:remaining_chars] + '\n...(内容已截断)'
+    return format_archive_member_text(name, text), ''
+
+
+def extract_zip_attachment_text(file_bytes):
+    limits = archive_limits()
+    snippets = []
+    errors = []
+    member_count = 0
+    extracted_bytes = 0
+
+    with zipfile.ZipFile(io.BytesIO(file_bytes)) as archive:
+        for info in archive.infolist():
+            if member_count >= limits['max_members'] or len('\n\n'.join(snippets)) >= limits['max_text_chars']:
+                break
+            if info.is_dir() or should_skip_archive_member(info.filename):
+                continue
+            member_count += 1
+            ext = normalize_extension(info.filename)
+            if not is_extractable_archive_member(ext) and not is_archive_text_member(info.filename, ext):
+                continue
+            if info.file_size > limits['max_member_size']:
+                errors.append(f"{info.filename}: 文件过大，已跳过")
+                continue
+            if extracted_bytes + info.file_size > limits['max_extracted_bytes']:
+                errors.append('压缩包解压总量超过限制，后续文件已跳过')
+                break
+            data = archive.read(info)
+            extracted_bytes += len(data)
+            remaining = limits['max_text_chars'] - len('\n\n'.join(snippets))
+            snippet, parse_error = collect_archive_member_text(info.filename, data, remaining)
+            if snippet:
+                snippets.append(snippet)
+            elif parse_error:
+                errors.append(f"{info.filename}: {parse_error}")
+
+    if snippets:
+        return '\n\n'.join(snippets)[:limits['max_text_chars']], ''
+    return '', '; '.join(errors) if errors else '压缩包内未找到可解析文本文件'
+
+
+def extract_tar_attachment_text(file_bytes):
+    limits = archive_limits()
+    snippets = []
+    errors = []
+    member_count = 0
+    extracted_bytes = 0
+
+    with tarfile.open(fileobj=io.BytesIO(file_bytes), mode='r:*') as archive:
+        for member in archive:
+            if member_count >= limits['max_members'] or len('\n\n'.join(snippets)) >= limits['max_text_chars']:
+                break
+            if not member.isfile() or should_skip_archive_member(member.name):
+                continue
+            member_count += 1
+            ext = normalize_extension(member.name)
+            if not is_extractable_archive_member(ext) and not is_archive_text_member(member.name, ext):
+                continue
+            if member.size > limits['max_member_size']:
+                errors.append(f"{member.name}: 文件过大，已跳过")
+                continue
+            if extracted_bytes + member.size > limits['max_extracted_bytes']:
+                errors.append('压缩包解压总量超过限制，后续文件已跳过')
+                break
+            stream = archive.extractfile(member)
+            if not stream:
+                continue
+            data = stream.read(limits['max_member_size'] + 1)
+            extracted_bytes += len(data)
+            remaining = limits['max_text_chars'] - len('\n\n'.join(snippets))
+            snippet, parse_error = collect_archive_member_text(member.name, data, remaining)
+            if snippet:
+                snippets.append(snippet)
+            elif parse_error:
+                errors.append(f"{member.name}: {parse_error}")
+
+    if snippets:
+        return '\n\n'.join(snippets)[:limits['max_text_chars']], ''
+    return '', '; '.join(errors) if errors else '压缩包内未找到可解析文本文件'
+
+
 def decode_text_bytes(file_bytes):
     for encoding in ('utf-8-sig', 'utf-8', 'gb18030', 'big5', 'latin-1'):
         try:
@@ -489,9 +663,14 @@ def decode_text_bytes(file_bytes):
     return file_bytes.decode('utf-8', errors='ignore')
 
 
-def extract_attachment_text(ext, file_bytes):
+def extract_attachment_text(ext, file_bytes, source_name=''):
     try:
-        if ext in {'txt', 'md'}:
+        if ext == 'zip':
+            return extract_zip_attachment_text(file_bytes)
+        if ext in {'tar', 'tgz'}:
+            return extract_tar_attachment_text(file_bytes)
+
+        if ext in {'txt', 'md'} or is_archive_text_member(source_name, ext):
             return decode_text_bytes(file_bytes), ''
 
         if ext == 'pdf':
@@ -1902,7 +2081,7 @@ def upload_attachments():
             with open(stored_path, 'wb') as f:
                 f.write(data)
 
-            extracted_text, parse_error = extract_attachment_text(ext, data)
+            extracted_text, parse_error = extract_attachment_text(ext, data, safe_name)
             parse_status = 'ready' if not parse_error else 'error'
             extracted_text = (extracted_text or '').strip()
             if len(extracted_text) > max_text_len:
