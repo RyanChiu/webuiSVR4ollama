@@ -4,7 +4,7 @@ import os
 import platform
 
 # 绑定地址和端口
-bind = "0.0.0.0:5001"
+bind = f"{os.environ.get('GUNICORN_HOST', '0.0.0.0')}:{os.environ.get('GUNICORN_PORT', '5001')}"
 
 is_darwin = platform.system() == "Darwin"
 if is_darwin:
