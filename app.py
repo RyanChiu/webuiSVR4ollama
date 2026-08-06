@@ -555,6 +555,16 @@ def should_skip_archive_member(name):
     parts = [part for part in normalized.split('/') if part]
     if not parts or any(part == '..' for part in parts):
         return True
+    ignored_dirs = {
+        '.git', '.hg', '.svn',
+        'node_modules', 'bower_components',
+        '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache',
+        '.venv', 'venv', 'env',
+        'dist', 'build', 'target', 'coverage',
+        '.next', '.nuxt', '.svelte-kit'
+    }
+    if any(part.lower() in ignored_dirs for part in parts[:-1]):
+        return True
     base = parts[-1]
     return base.startswith('._') or normalized.startswith('__MACOSX/')
 
@@ -590,10 +600,10 @@ def extract_zip_attachment_text(file_bytes):
                 break
             if info.is_dir() or should_skip_archive_member(info.filename):
                 continue
-            member_count += 1
             ext = normalize_extension(info.filename)
             if not is_extractable_archive_member(ext) and not is_archive_text_member(info.filename, ext):
                 continue
+            member_count += 1
             if info.file_size > limits['max_member_size']:
                 errors.append(f"{info.filename}: 文件过大，已跳过")
                 continue
@@ -627,10 +637,10 @@ def extract_tar_attachment_text(file_bytes):
                 break
             if not member.isfile() or should_skip_archive_member(member.name):
                 continue
-            member_count += 1
             ext = normalize_extension(member.name)
             if not is_extractable_archive_member(ext) and not is_archive_text_member(member.name, ext):
                 continue
+            member_count += 1
             if member.size > limits['max_member_size']:
                 errors.append(f"{member.name}: 文件过大，已跳过")
                 continue
@@ -858,6 +868,24 @@ def attachment_prompt_snippets(attachments, max_total_chars):
         snippets.append(snippet)
         remaining -= len(snippet) + 2
     return snippets
+
+
+def describe_unreadable_attachments(attachments):
+    descriptions = []
+    for attachment in attachments:
+        text = (attachment.extracted_text or '').strip()
+        if text:
+            continue
+        status = (attachment.parse_status or '').strip()
+        error = (attachment.parse_error or '').strip()
+        name = attachment.original_name or f'附件#{attachment.id}'
+        if error:
+            descriptions.append(f"{name}: {error}")
+        elif status and status != 'ready':
+            descriptions.append(f"{name}: 解析状态为 {status}")
+        else:
+            descriptions.append(f"{name}: 未提取到可用文本")
+    return descriptions
 
 
 def serialize_download_response(content, format_type, filename):
@@ -2348,11 +2376,19 @@ def chat():
             if prompt_budget <= 0:
                 return jsonify({'success': False, 'message': '问题上下文已接近上限，无法附加附件内容'})
             snippets = attachment_prompt_snippets(attachments, prompt_budget)
+            if not snippets:
+                unreadable = describe_unreadable_attachments(attachments)
+                detail = '；'.join(unreadable[:3]) if unreadable else '未提取到可用文本'
+                return jsonify({
+                    'success': False,
+                    'message': f'附件没有可加入上下文的文本，请检查压缩包内是否包含支持的源码/文档文件。{detail}'
+                }), 400
             if snippets:
                 attachment_block = "\n\n".join(snippets)
                 prompt = (
                     f"{prompt}\n\n"
-                    "以下是用户上传附件的文本摘录（可能不完整，请结合问题判断）：\n"
+                    "以下是系统已从用户上传附件中抽取出的文本内容（可能不完整）。"
+                    "请优先基于这些内容回答，不要声称无法访问或查看附件：\n"
                     f"{attachment_block}"
                 )
 

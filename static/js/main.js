@@ -1209,11 +1209,20 @@ class ChatApp {
         this.pendingAttachments.forEach((item) => {
             const encodedId = encodeURIComponent(String(item.id || ''));
             const name = item.original_name || 'unnamed';
+            const parseStatus = String(item.parse_status || 'ready');
+            const parseError = String(item.parse_error || '').trim();
+            const statusText = parseStatus === 'ready'
+                ? ''
+                : (parseError || `解析状态: ${parseStatus}`);
+            const statusHtml = statusText
+                ? `<span class="attachment-status" title="${this.escapeHtml(statusText)}">${this.escapeHtml(statusText)}</span>`
+                : '';
             html += `
                 <div class="attachment-item">
                     <i class="fas fa-paperclip"></i>
                     <span class="name" title="${this.escapeHtml(name)}">${this.escapeHtml(name)}</span>
                     <span>${this.formatFileSize(item.size_bytes || 0)}</span>
+                    ${statusHtml}
                     <button class="remove" onclick="app.removePendingAttachment('${encodedId}', event)">
                         <i class="fas fa-times"></i>
                     </button>
@@ -1277,8 +1286,11 @@ class ChatApp {
             this.renderPendingAttachments();
 
             const failed = Array.isArray(data.errors) ? data.errors : [];
+            const parseIssues = attachments.filter(item => String(item.parse_status || 'ready') !== 'ready');
             if (failed.length > 0) {
                 this.showToast(`部分上传失败（${failed.length}个）`, 'warning');
+            } else if (parseIssues.length > 0) {
+                this.showToast(`上传成功，但 ${parseIssues.length} 个附件未解析出可用文本`, 'warning');
             } else {
                 this.showToast(`上传成功（${attachments.length}个）`, 'success');
             }
@@ -1595,11 +1607,10 @@ class ChatApp {
                 })
             });
             
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-            
             const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.message || `HTTP error! status: ${response.status}`);
+            }
             
             this.hideThinking();
             
